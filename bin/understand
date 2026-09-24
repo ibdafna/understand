@@ -1,0 +1,8 @@
+#!/bin/sh
+# Resolve symlinks: Claude Code links plugin bin/ entries into its own PATH directory.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF")
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+exec node "$(dirname "$SELF")/../dist/understand.mjs" "$@"

@@ -1,0 +1,22 @@
+{
+  "name": "understand",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Records why a coding agent changed code, then renders a reviewable, symbol-level explanation of the diff.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run -s build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@vscode/tree-sitter-wasm": "^0.3.1",
+    "diff": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^7.0.2",
+    "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

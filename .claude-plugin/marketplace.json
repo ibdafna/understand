@@ -1,0 +1,14 @@
+{
+  "name": "understand-local",
+  "owner": {
+    "name": "Understand"
+  },
+  "plugins": [
+    {
+      "name": "understand",
+      "source": "./",
+      "description": "Record decisions while coding; review changes with their rationale."
+    }
+  ],
+  "description": "Local marketplace for the Understand plugin."
+}

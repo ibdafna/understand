@@ -1,0 +1,15 @@
+{
+  "name": "understand",
+  "displayName": "Understand",
+  "description": "Records why a coding agent changed code while it works, then renders a symbol-level review page explaining every change.",
+  "version": "0.1.0",
+  "keywords": [
+    "code-review",
+    "diff",
+    "rationale",
+    "decisions"
+  ],
+  "author": {
+    "name": "Understand"
+  }
+}
