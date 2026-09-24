@@ -95,6 +95,8 @@ kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); 
 .d-alts { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
 .d-alts li { padding-left: 14px; position: relative; margin-top: 2px; }
 .d-alts li::before { content: "✕"; position: absolute; left: 0; color: var(--faint); font-size: 10px; top: 2px; }
+.d-risks li::before { content: "!"; color: var(--careful); font-weight: 700; }
+.risk-src { font-size: 11px; color: var(--faint); white-space: nowrap; }
 .d-foot { margin-top: 6px; font-size: 11.5px; color: var(--faint); display: flex; gap: 8px; flex-wrap: wrap; }
 .tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; font-weight: 600; letter-spacing: .01em; }
 .tag.super { background: var(--mech-bg); color: var(--mech); text-decoration: line-through; }
@@ -134,7 +136,6 @@ main { padding: 20px 24px 120px; min-width: 0; }
 .imports .sym { border: 0; border-radius: 0; margin: 0; grid-template-columns: minmax(220px, 40%) minmax(0, 1fr); }
 .imports .sym + .sym { border-top: 1px solid var(--line-2); }
 .imports .sym:last-child .note { border-radius: 0 0 10px 0; }
-.imports .sym.hidden-all { display: none; }
 .is-import .chip .ct { display: none; }
 .is-import .rev { font-size: 0; gap: 0; }
 .code-col { min-width: 0; border-right: 1px solid var(--line-2); }
@@ -150,7 +151,7 @@ main { padding: 20px 24px 120px; min-width: 0; }
 .moved-path { font-family: var(--mono); font-size: 11.5px; color: var(--move-ink); }
 
 .code { overflow-x: auto; font: 12.5px/1.6 var(--mono); padding: 4px 0; }
-.ln { display: grid; grid-template-columns: 40px 40px 18px max-content; min-width: 100%; }
+.ln { display: grid; min-width: 100%; }
 .ln > span { white-space: pre; }
 .ln .no { color: var(--faint); text-align: right; padding-right: 8px; user-select: none; font-size: 11.5px; }
 .ln .sg { user-select: none; text-align: center; color: var(--faint); }
@@ -219,7 +220,8 @@ body.notes-hover .sym .hover-mark { display: inline-block; }
 }
 @media (max-width: 860px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
-  .side { display: none; }
+  /* The navigator (and the only full view of each decision) stacks above the code instead of disappearing. */
+  .side { position: static; height: auto; max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line); }
   main { padding: 16px 16px 80px; }
   .kbd-hint { display: none; }
 }
@@ -228,8 +230,6 @@ body.notes-hover .sym .hover-mark { display: inline-block; }
 .ln.gap { background: var(--panel-2); }
 .ln.gap .tx { font-family: var(--sans); font-size: 11.5px; color: var(--faint); font-style: italic; }
 .chip.later { border-style: dashed; }
-.unexpl.soft { border-color: var(--line); background: var(--panel-2); color: var(--muted); }
-.unexpl.soft b { color: var(--muted); }
 .unnarrated { color: var(--faint); font-style: italic; }
 .d-empty { padding: 16px; color: var(--muted); margin: 0; }
 div.collapsed-bar { cursor: default; }
@@ -316,14 +316,13 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const md = (s) => esc(s).replace(/`([^`]+)`/g, '<code class="ic">$1</code>');
 const pick = (v, allowed, dflt) => (allowed.includes(v) ? v : dflt);
 const ATTNS = ["careful", "skim", "mechanical"];
-const STATUSES = ["added", "removed", "modified", "moved"];
 
 const SYM = Object.fromEntries(DATA.symbols.map((s) => [s.id, s]));
 const DEC = Object.fromEntries(DATA.decisions.map((d) => [d.id, d]));
 const allDec = (s) => [...s.dec, ...s.later];
 const unexplained = (s) => !s.explained;
 
-const storeKey = "understand:" + DATA.base + ":";
+const storeKey = "understand:" + DATA.branch + ":";
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(storeKey + k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(storeKey + k, JSON.stringify(v)); } catch {} },
@@ -380,13 +379,12 @@ function hl(src, lang) {
 
 const GLYPH = { added: "+", removed: "−", modified: "~", moved: "→" };
 const ATTN_LABEL = { careful: "Review carefully", skim: "Skim", mechanical: "Mechanical" };
-const FLAG_TEXT = { o: "Not made by an observed agent tool (a manual edit or an unobserved program)", b: "Changed before recording started; no reason was captured", u: "The agent made this edit without recording why" };
+const FLAG_TEXT = { o: "Not made by an observed agent tool (a manual edit or an unobserved program)", b: "Changed before recording started; no reason was captured", u: "No decision names this symbol for the edit that wrote this line" };
 const ROW_LIMIT = 300;
 const base = (p) => String(p).split("/").pop();
 const lang = (s) => DATA.files[s.file]?.lang ?? "plain";
 const who = (d) => `<span class="who ${d.who === "human" ? "human" : "agent"}">${d.who === "human" ? "you" : "agent"}</span>`;
 const firstNo = (s) => { const r = s.rows.find((r) => r.t !== "gap"); return r ? (r.n ?? r.o ?? 0) : 0; };
-const statusOf = (s) => pick(s.status, STATUSES, "modified");
 const attnOf = (s) => pick(s.attn, ATTNS, "skim");
 
 function chipHTML(id, later) {
@@ -400,7 +398,7 @@ const chips = (s) => s.dec.map((d) => chipHTML(d, false)).join("") + s.later.map
 /* Only unchanged (moved) or deleted code starts collapsed; the narrator's labels never hide changed code. */
 function isCodeCollapsed(s) {
   if (s.kind === "import" || state.codeOpen.has(s.id)) return false;
-  return statusOf(s) === "moved" || statusOf(s) === "removed";
+  return s.status === "moved" || s.status === "removed";
 }
 
 function rowHTML(l, lg) {
@@ -428,7 +426,7 @@ function explainBox(s) {
   const parts = [];
   if (s.gaps.outside) parts.push("Some changed lines weren't made by an observed agent tool: a manual edit, or a program the recorder can't see.");
   if (s.gaps.before) parts.push("Some lines changed before recording started, so no reason was captured.");
-  if (s.gaps.unlinked) parts.push("The agent made this edit without recording why.");
+  if (s.gaps.unlinked) parts.push("No decision names this symbol for some of the agent's edits to it (it may have been named under an earlier name, before a rename).");
   if (!parts.length) parts.push("No recorded edit produced this change.");
   const later = s.later.length ? " Chips with a dashed border were linked afterwards and don't count as an explanation." : "";
   return `<div class="unexpl"><b>Not explained by a recorded decision</b>${esc(parts.join(" ") + later)}</div>`;
@@ -436,7 +434,7 @@ function explainBox(s) {
 
 function symHTML(s) {
   const imp = s.kind === "import";
-  const st = statusOf(s), at = attnOf(s);
+  const st = s.status, at = attnOf(s);
   const collapsed = isCodeCollapsed(s);
   const n = s.rows.filter((r) => r.t !== "gap").length;
   const head = imp ? "" : `<div class="sym-head">
@@ -454,12 +452,12 @@ function symHTML(s) {
     : collapsed
       ? `<button class="collapsed-bar" data-code="${s.id}">▸ Show ${n} line${n === 1 ? "" : "s"} <span class="why-collapsed">· ${reason}</span></button>`
       : codeHTML(s);
-  const hasDetail = s.why || s.how || s.risk || s.rel.length;
+  const hasDetail = s.why || s.how || s.risks.length || s.rel.length;
   const rev = `<label class="rev"><input type="checkbox" data-rev="${s.id}" ${state.reviewed.has(s.key) ? "checked" : ""}>Reviewed</label>`;
   const detail = hasDetail ? `<div class="detail">
       ${s.why ? `<h4>Why it exists</h4><p>${md(s.why)}</p>` : ""}
       ${s.how ? `<h4>Why this way</h4><p>${md(s.how)}</p>` : ""}
-      ${s.risk ? `<h4 class="risk">Risks &amp; assumptions</h4><p>${md(s.risk)}</p>` : ""}
+      ${s.risks.length ? `<h4 class="risk">Risks &amp; assumptions</h4>${s.risks.map((r) => `<p>${md(r.text)} <span class="risk-src">${r.from ? `recorded with ${esc(r.from)}` : "noticed while explaining"}</span></p>`).join("")}` : ""}
       ${s.rel.length ? `<h4>Related</h4><p class="rel">${s.rel.filter((r) => SYM[r]).map((r) => `<a href="#sym-${r}" data-jump="${r}">${esc(SYM[r].name)}</a>`).join("")}</p>` : ""}
     </div>` : "";
   const sum = s.sum ? md(s.sum) : `<span class="unnarrated">Not narrated yet.</span>`;
@@ -489,11 +487,11 @@ function explainText(s) {
 
 function groups() {
   if (state.view === "story") {
-    return DATA.chapters.map((c, i) => ({ key: c.id, num: String(i + 1).padStart(2, "0"), title: c.title, sum: c.sum, syms: c.syms.map((id) => SYM[id]).filter(Boolean) }));
+    return DATA.chapters.map((c, i) => ({ num: String(i + 1).padStart(2, "0"), title: c.title, sum: c.sum, syms: c.syms.map((id) => SYM[id]).filter(Boolean) }));
   }
   return Object.keys(DATA.files).sort().map((f) => {
     const syms = DATA.symbols.filter((s) => s.file === f).sort((a, b) => firstNo(a) - firstNo(b));
-    return { key: f, num: "", title: f, sum: null, file: true, st: DATA.files[f].status, syms };
+    return { num: "", title: f, sum: null, file: true, st: DATA.files[f].status, syms };
   }).filter((g) => g.syms.length);
 }
 
@@ -538,7 +536,7 @@ function renderSide() {
     body.innerHTML = groups().map((g) => `<div class="o-group">
       <div class="o-title">${g.num ? `<span class="n">${g.num}</span>` : ""}<span>${esc(g.file ? base(g.title) : g.title)}</span></div>
       ${g.syms.map((s) => `<a class="o-item${state.reviewed.has(s.key) ? " reviewed" : ""}" href="#sym-${s.id}" data-jump="${s.id}" data-oid="${s.id}">
-        <span class="glyph ${statusOf(s)}">${GLYPH[statusOf(s)]}</span><span class="nm">${esc(s.kind === "file" ? base(s.file) : s.name)}</span><span class="dot ${unexplained(s) ? "unexplained" : attnOf(s)}"></span></a>`).join("")}
+        <span class="glyph ${s.status}">${GLYPH[s.status]}</span><span class="nm">${esc(s.kind === "file" ? base(s.file) : s.name)}</span><span class="dot ${unexplained(s) ? "unexplained" : attnOf(s)}"></span></a>`).join("")}
     </div>`).join("");
   } else if (!DATA.decisions.length) {
     body.innerHTML = `<p class="d-empty">No decisions were recorded.</p>`;
@@ -552,6 +550,7 @@ function renderSide() {
         <div class="d-title">${md(d.title)}</div>
         ${d.ctx ? `<p class="d-ctx">${md(d.ctx)}</p>` : ""}
         ${d.alts.length ? `<ul class="d-alts">${d.alts.map((a) => `<li>${md(a)}</li>`).join("")}</ul>` : ""}
+        ${d.risks.length ? `<ul class="d-alts d-risks">${d.risks.map((r) => `<li>${md(r)}</li>`).join("")}</ul>` : ""}
         <div class="d-foot"><span>Shaped ${n} symbol${n === 1 ? "" : "s"}</span></div>
       </div>`;
     }).join("");
@@ -597,7 +596,7 @@ function renderStats() {
   const human = DATA.decisions.filter((d) => d.who === "human").length;
   const unexpl = s.filter(unexplained).length;
   const careful = s.filter((x) => attnOf(x) === "careful").length;
-  $("#branch").innerHTML = `<b>${esc(DATA.branch)}</b> vs baseline ${esc(DATA.base)}${DATA.startedOn && DATA.startedOn !== DATA.branch ? ` <span title="Recording started on another branch">(started on ${esc(DATA.startedOn)})</span>` : ""}`;
+  $("#branch").innerHTML = `<b>${esc(DATA.branch)}</b> · ${esc(DATA.baseLabel)} → ${esc(DATA.headLabel)}`;
   $("#stats").innerHTML = [
     DATA.sessions ? `<span><b>${DATA.sessions}</b> session${DATA.sessions === 1 ? "" : "s"}${DATA.span ? " · " + esc(fmtSpan(DATA.span)) : ""}</span>` : "",
     `<span><b>${Object.keys(DATA.files).length}</b> files</span>`,
@@ -611,6 +610,7 @@ function renderStats() {
   $("#intent").innerHTML = md(DATA.intent);
   $("#dec-count").textContent = DATA.decisions.length;
   const banners = [];
+  if (DATA.byName) banners.push("Built from the checked-in decision log (<code>.decisions/</code>): each symbol is matched to the decisions that name it. Line-by-line provenance (which edits wrote which lines, and what came from outside the agent) is only available where the work was recorded.");
   if (DATA.ignoredWrites.length) banners.push(`The agent wrote ${DATA.ignoredWrites.length} file${DATA.ignoredWrites.length === 1 ? "" : "s"} that git ignores, so ${DATA.ignoredWrites.length === 1 ? "it isn't" : "they aren't"} in this review: ${DATA.ignoredWrites.map((f) => `<code>${esc(f)}</code>`).join(", ")}`);
   for (const w of DATA.warnings) banners.push(esc(w));
   $("#banners").innerHTML = banners.map((b) => `<div class="banner">${b}</div>`).join("");

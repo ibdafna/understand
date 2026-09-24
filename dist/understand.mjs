@@ -1,78 +1,216 @@
 // src/cli.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
-import { randomBytes as randomBytes2 } from "node:crypto";
-import { copyFileSync as copyFileSync2, existsSync as existsSync4, mkdirSync as mkdirSync2, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2, join as join4, resolve as resolve2 } from "node:path";
+import { execFileSync as execFileSync4 } from "node:child_process";
+import { copyFileSync, mkdirSync as mkdirSync6, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname4, join as join8, resolve as resolve3 } from "node:path";
+
+// src/decide.ts
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync3, rmSync as rmSync2 } from "node:fs";
+import { dirname, join as join4 } from "node:path";
+
+// src/decisionlog.ts
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+var LOG_DIR = ".decisions";
+var COLUMNS = ["id", "recorded", "by", "title", "why", "shaped", "rejected", "risks", "revises", "mechanical"];
+function sharing(root) {
+  try {
+    return execFileSync("git", ["-C", root, "config", "--get", "understand.share"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== "false";
+  } catch {
+    return true;
+  }
+}
+function isLogPath(path) {
+  return path === LOG_DIR || path.startsWith(LOG_DIR + "/");
+}
+var cell = (s) => (s ?? "").replace(/[\t\r\n]+/g, " ").trim();
+var list = (xs) => (xs ?? []).map(cell).filter(Boolean).join("; ");
+function writeLog(rec) {
+  const root = rec.home.root;
+  if (!sharing(root)) return null;
+  const c = rec.config();
+  if (!rec.decisions().length) return null;
+  const file2 = join(root, LOG_DIR, c.logFile);
+  const named = /* @__PURE__ */ new Map();
+  for (const l of rec.linkRecords()) named.set(l.decision, [...named.get(l.decision) ?? [], ...l.for]);
+  const rows = rec.decisions().map((d) => [
+    d.id,
+    d.ts.slice(0, 10),
+    d.by === "human" ? "user" : "agent",
+    cell(d.title),
+    cell(d.why),
+    list([...d.for, ...named.get(d.id) ?? []]),
+    list(d.alternatives),
+    list(d.risks),
+    cell(d.supersedes),
+    d.mechanical ? "yes" : ""
+  ].join("	"));
+  mkdirSync(join(root, LOG_DIR), { recursive: true });
+  const tmp = `${file2}.${process.pid}.tmp`;
+  writeFileSync(tmp, [COLUMNS.join("	"), ...rows].join("\n") + "\n");
+  renameSync(tmp, file2);
+  return join(LOG_DIR, c.logFile);
+}
+function readLogs(root) {
+  const dir = join(root, LOG_DIR);
+  if (!existsSync(dir)) return [];
+  const files = readdirSync(dir).filter((f) => f.endsWith(".tsv")).sort();
+  const out = [];
+  files.forEach((f, i) => {
+    const [header2, ...lines] = readFileSync(join(dir, f), "utf8").split("\n").filter((l) => l.trim());
+    const cols = header2.split("	");
+    const at = (row2, name) => row2[cols.indexOf(name)] ?? "";
+    const split = (s) => s.split(/;\s*/).filter(Boolean);
+    const prefix = files.length > 1 ? `${String.fromCharCode(65 + i % 26)}` : "";
+    for (const line of lines) {
+      const row2 = line.split("	");
+      const id = at(row2, "id");
+      if (!/^D\d+$/.test(id)) continue;
+      out.push({
+        id: prefix + id,
+        ts: at(row2, "recorded"),
+        session: null,
+        title: at(row2, "title"),
+        why: at(row2, "why"),
+        by: at(row2, "by") === "user" ? "human" : "agent",
+        alternatives: split(at(row2, "rejected")),
+        risks: split(at(row2, "risks")),
+        ...at(row2, "revises") ? { supersedes: prefix + at(row2, "revises") } : {},
+        ...at(row2, "mechanical") === "yes" ? { mechanical: true } : {},
+        for: split(at(row2, "shaped")),
+        claimable: []
+      });
+    }
+  });
+  return out;
+}
 
 // src/git.ts
-import { execFileSync } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { execFileSync as execFileSync2 } from "node:child_process";
+import { existsSync as existsSync2 } from "node:fs";
+import { isAbsolute, join as join2 } from "node:path";
 var EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 function git(root, args, env) {
-  return execFileSync("git", ["-C", root, ...args], {
+  return execFileSync2("git", ["-C", root, ...args], {
     encoding: "utf8",
     maxBuffer: 512 * 1024 * 1024,
     env: env ? { ...process.env, ...env } : process.env,
     stdio: ["ignore", "pipe", "pipe"]
   });
 }
+function gitInput(root, args, input, env) {
+  return execFileSync2("git", ["-C", root, ...args], { input, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
+}
 function repoRoot(cwd) {
   try {
-    return execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync2("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
   } catch {
     return null;
   }
 }
+function commonDir(root) {
+  const p = git(root, ["rev-parse", "--git-common-dir"]).trim();
+  return isAbsolute(p) ? p : join2(root, p);
+}
 function currentBranch(root) {
   try {
-    return git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+    const b = git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).trim();
+    return b || null;
   } catch {
-    return "(no commits)";
+    return null;
   }
 }
-function gitPath(root, name) {
-  const p = git(root, ["rev-parse", "--git-path", name]).trim();
-  return isAbsolute(p) ? p : join(root, p);
-}
-function excludeLogDir(root) {
-  const file = gitPath(root, "info/exclude");
-  const cur = existsSync(file) ? readFileSync(file, "utf8") : "";
-  if (!cur.split("\n").includes(".understand/")) appendFileSync(file, (cur && !cur.endsWith("\n") ? "\n" : "") + ".understand/\n");
-}
-function snapshot(store2) {
-  return store2.withLock(() => {
-    const index = store2.path("index");
-    const real2 = gitPath(store2.root, "index");
-    if (existsSync(index) && lstatSync(index).isSymbolicLink()) throw new Error(".understand/index is a symlink; refusing to snapshot through it");
-    if (existsSync(real2) && existsSync(index) && realpathSync(index) === realpathSync(real2)) throw new Error("private index resolves to the repository's own index");
-    if (!existsSync(index) && existsSync(real2)) copyFileSync(real2, index);
-    const env = { GIT_INDEX_FILE: index };
-    git(store2.root, ["add", "-A", "--", "."], env);
-    return git(store2.root, ["write-tree"], env).trim();
-  });
-}
-function pinTree(root, tree, ref) {
-  const commit = git(root, ["commit-tree", tree, "-m", "understand baseline"]).trim();
-  git(root, ["update-ref", ref, commit]);
-  return commit;
-}
-function treeOf(root, rev) {
-  return git(root, ["rev-parse", "--verify", "--quiet", `${rev}^{tree}`]).trim();
-}
-function readAt(root, treeish, path) {
+function headCommit(root) {
   try {
-    return execFileSync("git", ["-C", root, "cat-file", "blob", `${treeish}:${path}`], {
+    return git(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).trim() || null;
+  } catch {
+    return null;
+  }
+}
+function branchBornSince(root, branch, since) {
+  let out = "";
+  try {
+    out = git(root, ["reflog", "show", "--date=unix", "--format=%gd%x09%gs", `refs/heads/${branch}`]);
+  } catch {
+    return false;
+  }
+  const entries = out.trim().split("\n").filter(Boolean).map((l) => {
+    const [ref, subject] = l.split("	");
+    return { time: Number(/@\{(\d+)\}/.exec(ref)?.[1] ?? 0), subject: subject ?? "" };
+  });
+  const oldest = entries[entries.length - 1];
+  if (oldest && oldest.time >= since && /^branch: Created/.test(oldest.subject)) return true;
+  return entries.some((e) => e.time >= since && /^Branch: renamed/i.test(e.subject));
+}
+function trunkBranch(root) {
+  const tryGit = (args) => {
+    try {
+      return git(root, args).trim();
+    } catch {
+      return "";
+    }
+  };
+  const exists = (b) => !!b && !!tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${b}`]);
+  const set = tryGit(["config", "--get", "understand.trunk"]);
+  if (set) return set;
+  const remotes = tryGit(["remote"]).split("\n").filter(Boolean).sort((a, b) => a === "origin" ? -1 : b === "origin" ? 1 : 0);
+  for (const r of remotes) {
+    const head = tryGit(["symbolic-ref", "--quiet", "--short", `refs/remotes/${r}/HEAD`]);
+    if (head) return head.slice(r.length + 1);
+  }
+  const init = tryGit(["config", "--get", "init.defaultBranch"]);
+  if (exists(init)) return init;
+  for (const b of ["main", "master", "trunk", "develop"]) if (exists(b)) return b;
+  const branches = tryGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]).split("\n").filter(Boolean);
+  if (branches.length > 12) return null;
+  let best = null, most = 0;
+  for (const b of branches) {
+    const n = branches.filter((o) => o !== b && isAncestor(root, b, o)).length;
+    if (n > most) {
+      most = n;
+      best = b;
+    }
+  }
+  return best;
+}
+function isAncestor(root, a, b) {
+  try {
+    execFileSync2("git", ["-C", root, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function writeWorktreeTree(root, env) {
+  git(root, ["add", "-A", "--", "."], env);
+  const tracked = git(root, ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"]).split("\0").filter((p) => p && existsSync2(join2(root, p)));
+  if (tracked.length) gitInput(root, ["--literal-pathspecs", "add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"], tracked.join("\0"), env);
+  return git(root, ["write-tree"], env).trim();
+}
+function treeOf(root, rev, env) {
+  return git(root, ["rev-parse", "--verify", "--quiet", `${rev}^{tree}`], env).trim();
+}
+function readAt(root, treeish, path, env) {
+  try {
+    return execFileSync2("git", ["-C", root, "cat-file", "blob", `${treeish}:${path}`], {
       encoding: "utf8",
       maxBuffer: 512 * 1024 * 1024,
+      env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "ignore"]
     });
   } catch {
     return null;
   }
 }
-function changedFiles(root, from, to) {
-  const out = git(root, ["diff-tree", "-r", "--no-renames", "--raw", "-z", from || EMPTY_TREE, to]);
+function entryAt(root, tree, path, env) {
+  try {
+    return git(root, ["ls-tree", "-z", tree, "--", `:(literal)${path}`], env).split("	")[0];
+  } catch {
+    return "";
+  }
+}
+function changedFiles(root, from, to, env) {
+  const out = git(root, ["diff-tree", "-r", "--no-renames", "--raw", "-z", from || EMPTY_TREE, to], env);
   const parts = out.split("\0");
   const res = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -86,7 +224,7 @@ function changedFiles(root, from, to) {
 }
 function isIgnored(root, path) {
   try {
-    execFileSync("git", ["-C", root, "check-ignore", "-q", "--", path], { stdio: "ignore" });
+    execFileSync2("git", ["-C", root, "check-ignore", "-q", "--", path], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -95,30 +233,227 @@ function isIgnored(root, path) {
 
 // src/capture.ts
 function capture(s, o) {
-  return s.withLock(() => {
+  s.home.withLock(() => {
     const st = s.state();
-    const tree = snapshot(s);
-    if (tree === st.lastTree) return null;
-    const files = changedFiles(s.root, st.lastTree, tree).map((c) => c.path);
-    const mine = o.only ? files.filter((f) => f === o.only) : files;
-    const others = o.only ? files.filter((f) => f !== o.only) : [];
+    const tree = s.home.snapshot();
+    if (tree === st.lastTree) return;
+    const files = changedFiles(s.home.root, st.lastTree, tree, s.home.readEnv()).map((c) => c.path).filter((p) => !isLogPath(p));
+    const mine = o.only ? files.filter((f) => o.only.includes(f)) : files;
+    const others = o.only ? files.filter((f) => !o.only.includes(f)) : [];
+    const turn = s.home.turn(o.session);
     const rec = (fs, unverified) => s.addEdit({
       ts: (/* @__PURE__ */ new Date()).toISOString(),
       session: o.session,
-      turn: s.session(st, o.session).turn,
+      turn,
       tool: unverified && !o.unverified ? "side effect" : o.tool,
       from: st.lastTree,
       to: tree,
       files: fs,
       ...o.command ? { command: o.command.slice(0, 2e3) } : {},
-      ...unverified ? { unverified: true } : {}
+      ...unverified ? { unverified: true } : {},
+      ...o.transcript && !unverified ? { transcript: o.transcript, toolUseId: o.toolUseId } : {}
     });
-    const edit = mine.length ? rec(mine, !!o.unverified) : null;
+    if (mine.length) rec(mine, !!o.unverified);
     if (others.length) rec(others, true);
-    st.lastTree = tree;
-    s.writeState(st);
-    return edit;
+    s.writeState({ lastTree: tree });
   });
+}
+
+// src/fsutil.ts
+import { randomBytes } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join3 } from "node:path";
+var DIR_MODE = 448;
+var FILE_MODE = 384;
+function withDirLock(dir, fn) {
+  mkdirSync2(dir, { recursive: true, mode: DIR_MODE });
+  chmodSync(dir, DIR_MODE);
+  const lock = join3(dir, "lock");
+  const owner = join3(lock, "owner");
+  const token = `${process.pid} ${randomBytes(8).toString("hex")}`;
+  const start = Date.now();
+  for (; ; ) {
+    const tmp = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
+    mkdirSync2(tmp, { mode: DIR_MODE });
+    writeFileSync2(join3(tmp, "owner"), token);
+    try {
+      renameSync2(tmp, lock);
+      break;
+    } catch (e) {
+      rmSync(tmp, { recursive: true, force: true });
+      if (e.code !== "EEXIST" && e.code !== "ENOTEMPTY") throw e;
+      if (ownerGone(owner)) {
+        const stale = `${lock}.stale.${process.pid}.${Date.now()}`;
+        try {
+          renameSync2(lock, stale);
+          if (ownerGone(join3(stale, "owner"))) rmSync(stale, { recursive: true, force: true });
+          else renameSync2(stale, lock);
+        } catch {
+        }
+        continue;
+      }
+      if (Date.now() - start > 6e4) throw new Error(`timed out waiting for ${lock}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      if (readFileSync2(owner, "utf8") === token) rmSync(lock, { recursive: true, force: true });
+    } catch {
+    }
+  }
+}
+function ownerGone(owner) {
+  let pid;
+  try {
+    pid = Number(readFileSync2(owner, "utf8").split(" ")[0]);
+  } catch {
+    return false;
+  }
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (e) {
+    return e.code === "ESRCH";
+  }
+}
+function writeAtomic(file2, text) {
+  const tmp = `${file2}.${process.pid}.tmp`;
+  writeFileSync2(tmp, text, { mode: FILE_MODE });
+  renameSync2(tmp, file2);
+}
+function readJson(file2, dflt) {
+  if (!existsSync3(file2)) return dflt;
+  return JSON.parse(readFileSync2(file2, "utf8"));
+}
+function writeJson(file2, value) {
+  writeAtomic(file2, JSON.stringify(value, null, 2) + "\n");
+}
+function readJsonl(file2) {
+  if (!existsSync3(file2)) return [];
+  const out = [];
+  for (const line of readFileSync2(file2, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      process.stderr.write(`warning: skipping a corrupt line in ${file2}
+`);
+    }
+  }
+  return out;
+}
+function appendJsonl(file2, rec) {
+  let prefix = "";
+  try {
+    const cur = readFileSync2(file2, "utf8");
+    if (cur && !cur.endsWith("\n")) prefix = "\n";
+  } catch {
+  }
+  appendFileSync(file2, prefix + JSON.stringify(rec) + "\n", { mode: FILE_MODE });
+}
+var nextNumber = (ids) => ids.reduce((m, id) => Math.max(m, Number(id.slice(1)) || 0), 0) + 1;
+
+// src/decide.ts
+function file(h, e, pending) {
+  const out = h.withLock(() => {
+    const rec = h.recording(e.session);
+    const known = (id) => rec.decisions().some((d2) => d2.id === id);
+    if (e.kind === "decide" && e.input.supersedes && !known(e.input.supersedes)) throw new Error(`--supersedes ${e.input.supersedes}: no such decision`);
+    if (e.kind === "link" && !known(e.decision)) throw new Error(`${e.decision} is not a recorded decision`);
+    if (pending === "own") capture(rec, { session: e.session, tool: "Bash", command: `(changes made in the same command as \`understand ${e.kind}\`)` });
+    if (pending === "unknown") capture(rec, { session: e.session, tool: "checkpoint", unverified: true });
+    const claimable = rec.turnEdits(e.session).map((x) => x.id);
+    if (e.kind === "link") {
+      rec.addLink({ decision: e.decision, for: e.for, claimable });
+      return { rec, id: e.decision };
+    }
+    const { input: d } = e;
+    const rec2 = rec.addDecision({
+      ts: e.ts,
+      session: e.session,
+      title: d.title,
+      why: d.why,
+      by: d.by,
+      alternatives: d.alternatives,
+      ...d.risks?.length ? { risks: d.risks } : {},
+      for: d.for,
+      claimable,
+      ...d.supersedes ? { supersedes: d.supersedes } : {},
+      ...d.mechanical ? { mechanical: true } : {}
+    });
+    return { rec, id: rec2.id };
+  });
+  return { ...out, log: writeLog(out.rec) };
+}
+var QUEUE = join4(LOG_DIR, ".pending.jsonl");
+function enqueue(root, e) {
+  const path = join4(root, QUEUE);
+  mkdirSync3(dirname(path), { recursive: true });
+  appendJsonl(path, e);
+  return QUEUE;
+}
+function drain(h) {
+  const path = join4(h.root, QUEUE);
+  if (!existsSync4(path)) return [];
+  const taken = `${path}.${process.pid}`;
+  renameSync3(path, taken);
+  const problems = [];
+  for (const line of readFileSync3(taken, "utf8").split("\n").filter((l) => l.trim())) {
+    try {
+      file(h, JSON.parse(line), "captured");
+    } catch (err) {
+      problems.push(err.message);
+    }
+  }
+  rmSync2(taken, { force: true });
+  return problems;
+}
+function isWriteDenied(err) {
+  const code = err?.code;
+  return code === "EPERM" || code === "EACCES" || code === "EROFS" || /Operation not permitted|Read-only file system/.test(String(err?.message));
+}
+
+// src/explanation.ts
+import { existsSync as existsSync5, readFileSync as readFileSync4 } from "node:fs";
+function readExplanation(path) {
+  if (!existsSync5(path)) return null;
+  return JSON.parse(readFileSync4(path, "utf8"));
+}
+var ATTN = /* @__PURE__ */ new Set(["careful", "skim", "mechanical"]);
+function check(x, n) {
+  const errors = [];
+  const ids = new Set(x.symbols.map((s) => s.id));
+  const decs = new Set(x.decisions.map((d) => d.id));
+  const placed = /* @__PURE__ */ new Map();
+  if (!n.title?.trim()) errors.push("title is empty");
+  if (!n.intent?.trim()) errors.push("intent is empty");
+  (n.chapters ?? []).forEach((c, i) => {
+    if (!c.title?.trim()) errors.push(`chapter ${i + 1} has no title`);
+    if (!Array.isArray(c.symbols)) {
+      errors.push(`chapter ${i + 1}: symbols must be a list`);
+      return;
+    }
+    for (const id of c.symbols) {
+      if (!ids.has(id)) errors.push(`chapter ${i + 1} lists unknown symbol ${id}`);
+      else if (placed.has(id)) errors.push(`${id} is in chapters ${placed.get(id) + 1} and ${i + 1}`);
+      else placed.set(id, i);
+    }
+  });
+  for (const [id, note] of Object.entries(n.symbols ?? {})) {
+    if (!ids.has(id)) {
+      errors.push(`entry for unknown symbol ${id}`);
+      continue;
+    }
+    if (!ATTN.has(note.attention)) errors.push(`${id}: attention must be careful, skim or mechanical`);
+    for (const d of note.decisions ?? []) if (!decs.has(d)) errors.push(`${id}: unknown decision ${d}`);
+    for (const r of note.related ?? []) if (!ids.has(r)) errors.push(`${id}: related symbol ${r} does not exist`);
+  }
+  const missing = x.symbols.filter((s) => !n.symbols?.[s.id]?.summary?.trim() || n.chapters?.length && !placed.has(s.id)).map((s) => s.id);
+  return { errors, missing };
 }
 
 // node_modules/diff/libesm/diff/base.js
@@ -371,8 +706,78 @@ function tokenize(value, options) {
   return retLines;
 }
 
-// src/extract/index.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+// src/store.ts
+import { join as join5 } from "node:path";
+var Store = class {
+  constructor(home2, id) {
+    this.home = home2;
+    this.id = id;
+    this.dir = home2.path("recordings", id);
+  }
+  home;
+  id;
+  dir;
+  path(...parts) {
+    return join5(this.dir, ...parts);
+  }
+  config() {
+    return readJson(this.path("config.json"), null);
+  }
+  writeConfig(c) {
+    writeJson(this.path("config.json"), c);
+  }
+  state() {
+    return readJson(this.path("state.json"), null);
+  }
+  writeState(s) {
+    writeJson(this.path("state.json"), s);
+  }
+  decisions() {
+    return readJsonl(this.path("decision_log.jsonl")).filter((d) => /^D\d+$/.test(d.id));
+  }
+  edits() {
+    return readJsonl(this.path("edits.jsonl")).filter((e) => /^E\d+$/.test(e.id));
+  }
+  linkRecords() {
+    return readJsonl(this.path("links.jsonl")).filter((l) => /^D\d+$/.test(l.decision));
+  }
+  ignoredWrites() {
+    return readJsonl(this.path("ignored.jsonl"));
+  }
+  addDecision(d) {
+    return this.home.withLock(() => {
+      const rec = { id: `D${nextNumber(this.decisions().map((x) => x.id))}`, ...d };
+      appendJsonl(this.path("decision_log.jsonl"), rec);
+      return rec;
+    });
+  }
+  addEdit(e) {
+    return this.home.withLock(() => {
+      const rec = { id: `E${nextNumber(this.edits().map((x) => x.id))}`, ...e };
+      appendJsonl(this.path("edits.jsonl"), rec);
+      return rec;
+    });
+  }
+  addLink(l) {
+    this.home.withLock(() => appendJsonl(this.path("links.jsonl"), l));
+  }
+  addIgnoredWrite(file2) {
+    this.home.withLock(() => appendJsonl(this.path("ignored.jsonl"), { file: file2 }));
+  }
+  claims() {
+    const out = [];
+    for (const r of [...this.decisions().map((d) => ({ ...d, decision: d.id })), ...this.linkRecords()]) {
+      const edits = new Set(r.claimable ?? []);
+      for (const spec of r.for ?? []) out.push({ decision: r.decision, spec, edits });
+    }
+    return out;
+  }
+  /** Agent edits from this session's current turn, explained or not. */
+  turnEdits(session) {
+    const turn = this.home.turn(session);
+    return this.edits().filter((e) => !e.unverified && e.session === session && e.turn === turn);
+  }
+};
 
 // src/extract/diff.ts
 var CONTEXT = 3;
@@ -391,12 +796,12 @@ function align(oldText, newText) {
   }
   return rows;
 }
-function compress(rows, context = CONTEXT) {
+function compress(rows, context2 = CONTEXT) {
   if (rows.length <= FULL_UNDER) return rows;
   const keep = rows.map(() => false);
   rows.forEach((r, i) => {
     if (r.t === " " || r.t === "gap") return;
-    for (let j = Math.max(0, i - context); j <= Math.min(rows.length - 1, i + context); j++) keep[j] = true;
+    for (let j = Math.max(0, i - context2); j <= Math.min(rows.length - 1, i + context2); j++) keep[j] = true;
   });
   keep[0] = true;
   const out = [];
@@ -448,58 +853,55 @@ function diffFile(oldText, newText, oldSyms, newSyms, rows = align(oldText ?? ""
     for (const n of [...nList]) {
       const i2 = oList.findIndex((o) => o.cmp === n.cmp);
       if (i2 >= 0) {
-        status.set(n.key, "same");
-        status.set(oList[i2].key, "same");
         oList.splice(i2, 1);
         nList.splice(nList.indexOf(n), 1);
       }
     }
     while (oList.length && nList.length) {
       const a = oList.shift(), b = nList.shift();
-      status.set(a.key, "modified");
-      status.set(b.key, "modified");
       const ownO = new Set(a.own), ownN = new Set(b.own);
       const raw = rows.filter((r) => r.t === "-" && ownO.has(r.o) || r.t === "+" && ownN.has(r.n) || r.t === " " && (ownO.has(r.o) || ownN.has(r.n)));
       const note = a.iota != null && b.iota != null && a.iota !== b.iota ? `implicit iota value moved from position ${a.iota} to ${b.iota}` : void 0;
-      claim({ ...meta(b), status: "modified", raw, full: false, body: b.cmp, ...note ? { note } : {} });
+      claim({ ...meta(b), status: "modified", raw, body: b.cmp, ...note ? { note } : {} });
     }
     for (const b of nList) {
       status.set(b.key, "added");
-      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x) => !!x && x.t !== "-"), full: true, body: b.cmp });
+      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x) => !!x && x.t !== "-"), body: b.cmp });
     }
     for (const a of oList) {
       status.set(a.key, "removed");
-      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x) => !!x && x.t !== "+"), full: true, body: a.cmp });
+      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x) => !!x && x.t !== "+"), body: a.cmp });
     }
   }
-  const covered = new Set(owner.keys());
-  for (const g of newSyms?.groups ?? []) {
-    if (g.members.length && g.members.every((k) => status.get(k) === "added")) for (const l of g.lines) {
-      const r = byNew.get(l);
-      if (r?.t === "+") covered.add(r);
+  const attach = (r, to) => {
+    to.raw.push(r);
+    to.raw.sort((x, y) => at.get(x) - at.get(y));
+    owner.set(r, to);
+  };
+  for (const [groups, want, line, t] of [[newSyms?.groups, "added", byNew, "+"], [oldSyms?.groups, "removed", byOld, "-"]]) {
+    for (const g of groups ?? []) {
+      if (!g.members.length || !g.members.every((k) => status.get(k) === want)) continue;
+      const first = pending.find((p) => p.key === g.members[0] && p.status === want);
+      const last = pending.find((p) => p.key === g.members[g.members.length - 1] && p.status === want);
+      if (!first || !last) continue;
+      const start = at.get(first.raw[0]) ?? 0;
+      for (const l of g.lines) {
+        const r = line.get(l);
+        if (r?.t === t && !owner.has(r)) attach(r, at.get(r) < start ? first : last);
+      }
     }
   }
-  for (const g of oldSyms?.groups ?? []) {
-    if (g.members.length && g.members.every((k) => status.get(k) === "removed")) for (const l of g.lines) {
-      const r = byOld.get(l);
-      if (r?.t === "-") covered.add(r);
-    }
-  }
-  const changedLoose = (i2) => rows[i2] && rows[i2].t !== " " && !covered.has(rows[i2]);
+  const changedLoose = (i2) => rows[i2] && rows[i2].t !== " " && !owner.has(rows[i2]);
   for (let pass = 0; pass < 2; pass++) {
     const order = pass === 0 ? rows.map((_, i2) => i2) : rows.map((_, i2) => rows.length - 1 - i2);
     for (const i2 of order) {
       if (!changedLoose(i2) || rows[i2].s.trim() !== "") continue;
       const nb = owner.get(rows[pass === 0 ? i2 - 1 : i2 + 1]);
-      if (!nb) continue;
-      nb.raw.push(rows[i2]);
-      nb.raw.sort((x, y) => at.get(x) - at.get(y));
-      owner.set(rows[i2], nb);
-      covered.add(rows[i2]);
+      if (nb) attach(rows[i2], nb);
     }
   }
-  const out = pending.map(({ raw, full, ...c }) => ({ ...c, rows: full ? withGaps(raw) : compress(withGaps(raw)) }));
-  const loose = rows.map((r) => r.t !== " " && !covered.has(r));
+  const out = pending.map(({ raw, ...c }) => ({ ...c, rows: c.status === "modified" ? compress(withGaps(raw)) : withGaps(raw) }));
+  const loose = rows.map((r) => r.t !== " " && !owner.has(r));
   let i = 0;
   while (i < rows.length) {
     if (!loose[i]) {
@@ -872,39 +1274,51 @@ function pyBlock(nodes, b, cls) {
 }
 
 // src/extract/index.ts
+function rangeKey(r) {
+  const slug = (x) => x.replace(/[^\w.-]+/g, "-");
+  return r.kind === "pr" ? `pr-${slug(r.ref)}` : r.kind === "commits" ? `commits-${slug(r.spec)}` : r.kind;
+}
 var LFS = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\n/;
 var isBinary = (s) => s != null && s.slice(0, 8e3).includes("\0");
-async function extract(store2) {
-  const { cfg, tree, edits, decisions, links, claims, ignored } = store2.withLock(() => ({
-    cfg: store2.config(),
-    tree: snapshot(store2),
-    edits: store2.edits(),
-    decisions: store2.decisions(),
-    links: store2.links(),
-    claims: store2.claims(),
-    ignored: store2.ignoredWrites()
-  }));
+async function extract(src, range = { kind: "recording" }) {
+  const store = src instanceof Store ? src : null;
+  const home2 = store ? store.home : src;
+  const env = home2.readEnv();
+  const { cfg, live, edits, decisions, claims, ignored } = home2.withLock(() => {
+    if (!store) {
+      const decisions2 = readLogs(home2.root);
+      const claims2 = decisions2.flatMap((d) => d.for.map((spec) => ({ decision: d.id, spec, edits: /* @__PURE__ */ new Set() })));
+      return { cfg: null, live: home2.snapshot(), edits: [], decisions: decisions2, claims: claims2, ignored: [] };
+    }
+    const cfg2 = store.config();
+    const live2 = home2.scope(cfg2.session) === cfg2.scope ? home2.snapshot() : store.state().lastTree;
+    return { cfg: cfg2, live: live2, edits: store.edits(), decisions: store.decisions(), claims: store.claims(), ignored: store.ignoredWrites() };
+  });
+  if (!cfg && range.kind === "recording") throw new Error("no local recording here: pick a range (--pr, --branch, --staged, --uncommitted, --commits)");
+  const byName = !cfg;
+  const start = cfg?.baseTree ?? "";
+  const { baseTree, tree, baseLabel, headLabel } = resolveRange(home2.root, range, start, live, env);
   const warnings = [];
-  const baseTree = treeOf(store2.root, cfg.base);
-  const reader = cachedReader(store2.root);
+  const reader = cachedReader(home2.root, env);
   const files = {};
   const changes = [];
-  for (const ch of changedFiles(store2.root, cfg.base, tree)) {
+  for (const ch of changedFiles(home2.root, baseTree, tree, env)) {
+    if (isLogPath(ch.path)) continue;
     const status = ch.status === "A" ? "added" : ch.status === "D" ? "deleted" : "modified";
     files[ch.path] = { lang: hlLang(ch.path), status };
-    const fileLevel = (name, rows2, note) => {
+    const fileLevel = (name, rows2, note, part = "entry") => {
       files[ch.path].note = note;
-      changes.push({ key: `file:${name}`, kind: "file", name, sig: "", status: status === "deleted" ? "removed" : status, rows: rows2, body: "", file: ch.path, extra: fileLabels(store2.root, cfg, baseTree, tree, edits, ch.path) });
+      changes.push({ key: `file:${name}`, kind: "file", name, sig: "", status: status === "deleted" ? "removed" : status, rows: rows2, body: "", file: ch.path, extra: byName ? /* @__PURE__ */ new Set() : fileLabels(home2.root, env, baseTree, start, tree, edits, ch.path, part) });
     };
     if (ch.oldMode === "160000" || ch.newMode === "160000") {
       fileLevel("(submodule)", modeRows(ch, (sha) => `Subproject commit ${sha}`), "submodule pointer");
       continue;
     }
-    const oldText = ch.status === "A" ? null : reader(cfg.base, ch.path);
+    const oldText = ch.status === "A" ? null : reader(baseTree, ch.path);
     const newText = ch.status === "D" ? null : reader(tree, ch.path);
-    if (ch.status === "M" && ch.oldMode !== ch.newMode) fileLevel("(file mode)", [{ t: "-", s: `mode ${ch.oldMode}` }, { t: "+", s: `mode ${ch.newMode}` }], `mode ${ch.oldMode} \u2192 ${ch.newMode}`);
+    if (ch.status === "M" && ch.oldMode !== ch.newMode) fileLevel("(file mode)", [{ t: "-", s: `mode ${ch.oldMode}` }, { t: "+", s: `mode ${ch.newMode}` }], `mode ${ch.oldMode} \u2192 ${ch.newMode}`, "mode");
     if (isBinary(oldText) || isBinary(newText)) {
-      fileLevel("(binary file)", [], "binary");
+      fileLevel("(binary file)", [], "binary", "blob");
       continue;
     }
     if (oldText === newText && ch.status === "M") continue;
@@ -922,10 +1336,13 @@ async function extract(store2) {
     }
     if (special) files[ch.path].note = special;
     const rows = align(oldText ?? "", newText ?? "");
-    const prov = track(cfg, baseTree, edits, ch.path, oldText, newText, reader);
-    for (const r of rows) {
-      if (r.t === "+") r.p = prov.added(r.n, r.s);
-      else if (r.t === "-") r.p = prov.removed(r.o);
+    const prov = byName ? null : track(baseTree, start, edits, ch.path, oldText, newText, reader);
+    if (prov) for (const r of rows) {
+      if (r.t === "+") {
+        const a = prov.added(r.n, r.s);
+        r.p = a.label;
+        if (a.at) r.pa = a.at;
+      } else if (r.t === "-") r.p = prov.removed(r.o);
     }
     const found = diffFile(oldText, newText, oldSyms, newSyms, rows);
     if (!found.length) {
@@ -941,14 +1358,32 @@ async function extract(store2) {
   detectMoves(changes);
   const ignoredWrites = [...new Set(ignored.map((w) => w.file))].filter((f) => !files[f]);
   const byId = new Map(edits.map((e) => [e.id, e]));
-  const paths = Object.keys(files);
-  const symbols = changes.map((c) => attribute(c, byId, links, claims, paths));
+  const namesThen = byName ? null : await namesAtTime(changes, byId, reader);
+  const shortCount = /* @__PURE__ */ new Map();
+  for (const c of changes) {
+    const k = `${c.file}:${c.name.split(".").pop()}`;
+    shortCount.set(k, (shortCount.get(k) ?? 0) + 1);
+  }
+  const unique = (c) => (short) => (shortCount.get(`${c.file}:${short}`) ?? 0) <= 1;
+  const symbols = changes.map((c) => ({
+    id: `${c.file}#${c.key}`,
+    file: c.file,
+    kind: c.kind,
+    name: c.name,
+    sig: c.sig,
+    status: c.status,
+    ...c.movedFrom ? { movedFrom: c.movedFrom } : {},
+    ...c.note ? { note: c.note } : {},
+    rows: c.rows,
+    ...byName ? attributeByName(c, claims, unique(c)) : attribute(c, byId, claims, unique(c), namesThen)
+  }));
   const stamps = [...edits.map((e) => e.ts), ...decisions.map((d) => d.ts)].sort();
   return {
-    base: cfg.base,
-    tree,
-    branch: currentBranch(store2.root),
-    startedOn: cfg.branch,
+    baseLabel,
+    headLabel,
+    branch: currentBranch(home2.root) ?? "(detached)",
+    startedOn: cfg ? cfg.branch ?? "(detached)" : "(from the checked-in decision log)",
+    byName,
     generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
     sessions: [...new Set([...edits.filter((e) => !e.unverified), ...decisions].map((x) => x.session).filter((s) => !!s))],
     span: stamps.length ? [stamps[0], stamps[stamps.length - 1]] : null,
@@ -959,11 +1394,45 @@ async function extract(store2) {
     warnings
   };
 }
-function cachedReader(root) {
+function resolveRange(root, r, start, live, env) {
+  const rev = (x) => git(root, ["rev-parse", "--verify", x]).trim();
+  const tree = (commit) => treeOf(root, commit, env);
+  const short = (c) => c.slice(0, 8);
+  const mergeBase = (ref, head) => git(root, ["merge-base", ref, head]).trim();
+  switch (r.kind) {
+    case "recording":
+      return { baseTree: start, tree: live, baseLabel: "where recording started", headLabel: "the working tree" };
+    case "pr": {
+      const head = rev("HEAD"), mb = mergeBase(r.ref, head);
+      return { baseTree: tree(mb), tree: tree(head), baseLabel: `merge-base with ${r.ref} (${short(mb)})`, headLabel: `HEAD (${short(head)})` };
+    }
+    case "branch": {
+      const trunk = trunkBranch(root);
+      if (!trunk) throw new Error("can't tell which branch is trunk here; set it with `git config understand.trunk <branch>`");
+      const mb = mergeBase(trunk, rev("HEAD"));
+      return { baseTree: tree(mb), tree: live, baseLabel: `merge-base with ${trunk} (${short(mb)})`, headLabel: "the working tree" };
+    }
+    case "staged": {
+      const head = rev("HEAD");
+      const index = git(root, ["write-tree"], { GIT_OBJECT_DIRECTORY: env.GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES: env.GIT_ALTERNATE_OBJECT_DIRECTORIES }).trim();
+      return { baseTree: tree(head), tree: index, baseLabel: `HEAD (${short(head)})`, headLabel: "the staged changes" };
+    }
+    case "uncommitted": {
+      const head = rev("HEAD");
+      return { baseTree: tree(head), tree: live, baseLabel: `HEAD (${short(head)})`, headLabel: "the working tree" };
+    }
+    case "commits": {
+      const [a, b] = r.spec.includes("..") ? r.spec.split(/\.\.\.?/) : [`${r.spec}^`, r.spec];
+      const from = rev(a || "HEAD"), to = rev(b || "HEAD");
+      return { baseTree: tree(from), tree: tree(to), baseLabel: short(from), headLabel: short(to) };
+    }
+  }
+}
+function cachedReader(root, env) {
   const cache = /* @__PURE__ */ new Map();
   return (tree, path) => {
     const k = `${tree}:${path}`;
-    if (!cache.has(k)) cache.set(k, readAt(root, tree, path));
+    if (!cache.has(k)) cache.set(k, readAt(root, tree, path, env));
     return cache.get(k);
   };
 }
@@ -978,7 +1447,7 @@ function splitLines(text) {
   if (lines[lines.length - 1] === "") lines.pop();
   return lines;
 }
-function track(cfg, baseTree, edits, path, baseText, finalText, read) {
+function track(baseTree, startTree, edits, path, baseText, finalText, read) {
   let text = baseText ?? "";
   const baseLines = splitLines(text);
   let lines = baseLines.map((_, i) => ({ base: i + 1 }));
@@ -997,15 +1466,19 @@ function track(cfg, baseTree, edits, path, baseText, finalText, read) {
         if (p.removed && b != null) pool.set(cur[i], [...pool.get(cur[i]) ?? [], b]);
       }
     }
+    const present = new Set(lines.map((o) => o.base).filter((b) => b != null));
+    const gone = /* @__PURE__ */ new Map();
+    for (const b of removedBy.keys()) if (!present.has(b)) gone.set(baseLines[b - 1], [...gone.get(baseLines[b - 1]) ?? [], b]);
     const carried = /* @__PURE__ */ new Set();
     const out = [];
     i = 0;
     for (const p of parts) {
       if (p.added) {
         for (const t of p.lines) {
-          const b = pool.get(t)?.shift();
+          let b = pool.get(t)?.shift();
           if (b != null) carried.add(b);
-          out.push(b != null ? { label, base: b } : { label });
+          else if ((b = gone.get(t)?.shift()) != null) removedBy.delete(b);
+          out.push(b != null ? { label, base: b, at: out.length + 1 } : { label, at: out.length + 1 });
         }
       } else if (p.removed) {
         for (let k = 0; k < p.lines.length; k++) i++;
@@ -1022,7 +1495,7 @@ function track(cfg, baseTree, edits, path, baseText, finalText, read) {
     lines = out;
     text = nt;
   };
-  if (baseTree !== cfg.initTree) step(read(cfg.initTree, path), "before");
+  if (baseTree !== startTree) step(read(startTree, path), "before");
   for (const e of edits) {
     if (!e.files.includes(path)) continue;
     step(read(e.from, path), "outside");
@@ -1033,9 +1506,9 @@ function track(cfg, baseTree, edits, path, baseText, finalText, read) {
   return {
     added(n, s) {
       const o = lines[n - 1];
-      if (o?.label) return o.label;
+      if (o?.label) return { label: o.label, at: o.at };
       const k = finalLines.findIndex((x, j) => x === s && lines[j]?.label);
-      return k >= 0 ? lines[k].label : "outside";
+      return k >= 0 ? { label: lines[k].label, at: lines[k].at } : { label: "outside" };
     },
     removed(o) {
       const by = removedBy.get(o);
@@ -1045,29 +1518,26 @@ function track(cfg, baseTree, edits, path, baseText, finalText, read) {
     }
   };
 }
-function fileLabels(root, cfg, baseTree, finalTree, edits, path) {
+function fileLabels(root, env, baseTree, startTree, finalTree, edits, path, part) {
   const sha = (tree) => {
-    try {
-      return execFileSync2("git", ["-C", root, "ls-tree", "-z", tree, "--", `:(literal)${path}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split("	")[0];
-    } catch {
-      return "";
-    }
+    const [mode, , oid] = entryAt(root, tree, path, env).split(" ");
+    return part === "mode" ? mode : part === "blob" ? oid : `${mode} ${oid}`;
   };
-  const labels = /* @__PURE__ */ new Set();
+  let last = "outside";
   let cur = sha(baseTree);
   const step = (tree, label) => {
     const next = sha(tree);
-    if (next !== cur) labels.add(label);
+    if (next !== cur) last = label;
     cur = next;
   };
-  if (baseTree !== cfg.initTree) step(cfg.initTree, "before");
+  if (baseTree !== startTree) step(startTree, "before");
   for (const e of edits) {
     if (!e.files.includes(path)) continue;
     step(e.from, "outside");
     step(e.to, e.unverified ? "outside" : e.id);
   }
   step(finalTree, "outside");
-  return labels;
+  return /* @__PURE__ */ new Set([last]);
 }
 function detectMoves(changes) {
   const movable = (c) => c.body && c.kind !== "import" && c.kind !== "other" && c.kind !== "file";
@@ -1087,93 +1557,115 @@ function detectMoves(changes) {
     changes.splice(changes.indexOf(r), 1);
   }
 }
-function parseClaim(spec, paths) {
+function claimKind(spec, c, names, unique) {
   const clean = spec.trim().replace(/^\.\//, "");
-  const i = clean.lastIndexOf(":");
-  if (i > 0) return { file: clean.slice(0, i), symbol: clean.slice(i + 1) };
-  if (paths.includes(clean) || /\/|\.\w+$/.test(clean)) return { file: clean };
-  return { symbol: clean };
+  for (const file2 of [c.file, c.movedFrom].filter((f) => !!f)) {
+    if (clean === file2) return "file";
+    if (!clean.startsWith(file2 + ":")) continue;
+    const symbol = clean.slice(file2.length + 1);
+    for (const name of names) {
+      const short = name.split(".").pop();
+      if (symbol === name || symbol === short && unique(short)) return "symbol";
+    }
+  }
+  return null;
 }
-function claimKind(c, s, paths) {
-  const { file, symbol } = parseClaim(c.spec, paths);
-  if (file && file !== s.file && file !== s.movedFrom) return null;
-  if (!symbol) return "file";
-  return symbol === s.name || symbol === s.name.split(".").pop() ? "symbol" : null;
+async function namesAtTime(changes, byId, read) {
+  const out = /* @__PURE__ */ new Map();
+  for (const c of changes) {
+    const lang = langOf(c.file);
+    if (!lang) continue;
+    for (const r of c.rows) {
+      if (r.t !== "+" || !r.p || !r.pa || !byId.has(r.p)) continue;
+      const key = `${r.p}:${c.file}`;
+      if (out.has(key)) continue;
+      const text = read(byId.get(r.p).to, c.file);
+      const byLine = /* @__PURE__ */ new Map();
+      if (text != null) {
+        try {
+          for (const sym of (await symbolsOf(lang, text)).syms) for (const l of sym.own) byLine.set(l, [...byLine.get(l) ?? [], sym.name]);
+        } catch {
+        }
+      }
+      out.set(key, byLine);
+    }
+  }
+  return out;
 }
-function attribute(c, byId, links, claims, paths) {
+function attributeByName(c, claims, unique) {
+  const names = /* @__PURE__ */ new Set([c.name]);
+  const hits = claims.map((cl) => ({ cl, kind: claimKind(cl.spec, c, names, unique) })).filter((x) => x.kind);
+  const bySym = hits.filter((x) => x.kind === "symbol");
+  const decisions = [...new Set((bySym.length ? bySym : hits).map((x) => x.cl.decision))];
+  return { edits: [], decisions, later: [], gaps: { outside: false, before: false, unlinked: [] }, explained: decisions.length > 0 };
+}
+function attribute(c, byId, claims, unique, namesThen) {
+  const changed = c.rows.filter((r) => (r.t === "+" || r.t === "-") && r.p);
+  const meaningful = changed.some((r) => r.s.trim()) ? changed.filter((r) => r.s.trim()) : changed;
   const labels = new Set(c.extra);
-  for (const r of c.rows) if ((r.t === "+" || r.t === "-") && r.p) labels.add(r.p);
+  for (const r of meaningful) labels.add(r.p);
   const editIds = [...labels].filter((l) => byId.has(l));
   const decisions = /* @__PURE__ */ new Set();
   const unlinked = [];
-  const relevant = claims.map((cl) => ({ cl, kind: claimKind(cl, c, paths) })).filter((x) => x.kind);
-  const used = /* @__PURE__ */ new Set();
   for (const id of editIds) {
-    const e = byId.get(id);
-    const same = relevant.filter(({ cl }) => cl.edits.has(id));
-    const bySym = same.filter((x) => x.kind === "symbol").map((x) => x.cl);
-    const chosen = bySym.length ? bySym : same.filter((x) => x.kind === "file").map((x) => x.cl);
-    chosen.forEach((cl) => used.add(cl));
-    const link = links.get(id);
-    const ds = [...new Set(chosen.length ? chosen.map((cl) => cl.decision) : link ? [link] : [])];
-    if (!ds.length) unlinked.push(id);
-    ds.forEach((d) => decisions.add(d));
+    const names = /* @__PURE__ */ new Set([c.name]);
+    for (const r of meaningful) if (r.p === id && r.pa) for (const n of namesThen.get(`${id}:${c.file}`)?.get(r.pa) ?? []) names.add(n);
+    const mine = claims.map((cl) => ({ cl, kind: cl.edits.has(id) ? claimKind(cl.spec, c, names, unique) : null })).filter((x) => x.kind);
+    const bySym = mine.filter((x) => x.kind === "symbol");
+    const chosen = bySym.length ? bySym : mine;
+    if (!chosen.length) unlinked.push(id);
+    chosen.forEach(({ cl }) => decisions.add(cl.decision));
   }
-  const later = [...new Set(relevant.filter(({ cl }) => !used.has(cl) && !decisions.has(cl.decision)).map(({ cl }) => cl.decision))];
+  const named = claims.filter((cl) => claimKind(cl.spec, c, /* @__PURE__ */ new Set([c.name]), unique));
+  const later = [...new Set(named.map((cl) => cl.decision))].filter((d) => !decisions.has(d));
   const gaps = { outside: labels.has("outside"), before: labels.has("before"), unlinked };
-  return {
-    id: `${c.file}#${c.key}`,
-    file: c.file,
-    kind: c.kind,
-    name: c.name,
-    sig: c.sig,
-    status: c.status,
-    ...c.movedFrom ? { movedFrom: c.movedFrom } : {},
-    ...c.note ? { note: c.note } : {},
-    rows: c.rows,
-    edits: editIds,
-    decisions: [...decisions],
-    later,
-    gaps,
-    explained: editIds.length > 0 && !gaps.outside && !gaps.before && unlinked.length === 0
-  };
+  return { edits: editIds, decisions: [...decisions], later, gaps, explained: editIds.length > 0 && !gaps.outside && !gaps.before && unlinked.length === 0 };
 }
 
-// src/hook.ts
-import { appendFileSync as appendFileSync3, readFileSync as readFileSync3, realpathSync as realpathSync3 } from "node:fs";
-import { basename, dirname, isAbsolute as isAbsolute2, join as join3, relative as relative2, resolve, sep } from "node:path";
-
-// src/store.ts
-import { randomBytes } from "node:crypto";
-import { appendFileSync as appendFileSync2, existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync, readFileSync as readFileSync2, realpathSync as realpathSync2, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join as join2, relative } from "node:path";
-var Store = class {
-  constructor(root) {
+// src/home.ts
+import { createHash, randomBytes as randomBytes2 } from "node:crypto";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname as dirname2, isAbsolute as isAbsolute2, join as join6, relative, resolve, sep } from "node:path";
+function realish(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return dirname2(p) === p ? p : join6(realish(dirname2(p)), basename(p));
+  }
+}
+function understandHome() {
+  return process.env.UNDERSTAND_HOME || join6(homedir(), ".claude", "understand");
+}
+var Home = class _Home {
+  constructor(root, dir, repoObjects) {
     this.root = root;
+    this.dir = dir;
+    this.repoObjects = repoObjects;
   }
   root;
+  dir;
+  repoObjects;
   depth = 0;
-  get dir() {
-    return join2(this.root, ".understand");
+  static forRepo(root) {
+    const common = realpathSync(commonDir(root));
+    const main2 = basename(common) === ".git" ? basename(dirname2(common)) : basename(common).replace(/\.git$/, "");
+    const name = main2.replace(/[^\w.-]/g, "_") + "-" + createHash("sha1").update(common).digest("hex").slice(0, 10);
+    const home2 = realish(resolve(understandHome()));
+    for (const inside of [realpathSync(root), common]) {
+      const rel = relative(inside, home2);
+      if (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute2(rel)) throw new Error(`UNDERSTAND_HOME (${home2}) is inside the repository; it must live outside it`);
+    }
+    return new _Home(root, join6(home2, "repos", name), join6(common, "objects"));
   }
   path(...parts) {
-    return join2(this.dir, ...parts);
+    return join6(this.dir, ...parts);
   }
-  /** .understand must be a real directory inside the repo; anything else could redirect writes. */
-  assertSafe() {
-    if (!existsSync2(this.dir)) return;
-    if (lstatSync2(this.dir).isSymbolicLink()) throw new Error(".understand is a symlink; refusing to record through it");
-    const rel = relative(realpathSync2(this.root), realpathSync2(this.dir));
-    if (rel !== ".understand") throw new Error(".understand resolves outside the repository");
+  /** Off for this repo (`understand off`), or everywhere (`understand off --everywhere`, UNDERSTAND_DISABLE=1). */
+  isOff() {
+    return !!process.env.UNDERSTAND_DISABLE || existsSync6(join6(understandHome(), "off")) || existsSync6(this.path("off"));
   }
-  exists() {
-    this.assertSafe();
-    return existsSync2(this.path("config.json"));
-  }
-  /**
-   * Serialize every read-modify-write across hooks and CLI calls (reentrant within a process).
-   * The lock records its owner; it is only reclaimed when that process is gone, never by age.
-   */
+  /** Serialize every read-modify-write across hooks and CLI calls (reentrant within a process). */
   withLock(fn) {
     if (this.depth > 0) {
       this.depth++;
@@ -1183,269 +1675,277 @@ var Store = class {
         this.depth--;
       }
     }
-    this.assertSafe();
-    mkdirSync(this.dir, { recursive: true });
-    const lock = this.path("lock");
-    const owner = join2(lock, "owner");
-    const token = `${process.pid} ${randomBytes(8).toString("hex")}`;
-    const start = Date.now();
-    for (; ; ) {
+    return withDirLock(this.dir, () => {
+      this.depth = 1;
       try {
-        mkdirSync(lock);
-        writeFileSync(owner, token);
-        break;
-      } catch (e) {
-        if (e.code !== "EEXIST") throw e;
-        if (ownerGone(owner)) {
-          const stale = `${lock}.stale.${process.pid}.${Date.now()}`;
-          try {
-            renameSync(lock, stale);
-            if (ownerGone(join2(stale, "owner"))) rmSync(stale, { recursive: true, force: true });
-            else renameSync(stale, lock);
-          } catch {
-          }
-          continue;
-        }
-        if (Date.now() - start > 6e4) throw new Error("timed out waiting for .understand/lock");
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+        return fn();
+      } finally {
+        this.depth = 0;
       }
-    }
-    this.depth = 1;
-    try {
-      return fn();
-    } finally {
-      this.depth = 0;
-      try {
-        if (readFileSync2(owner, "utf8") === token) rmSync(lock, { recursive: true, force: true });
-      } catch {
-      }
-    }
-  }
-  config() {
-    const c = JSON.parse(readFileSync2(this.path("config.json"), "utf8"));
-    if (c.version !== 2) throw new Error("this recording was made by an older understand; run `understand init --force` to start a new one");
-    return c;
-  }
-  writeConfig(c) {
-    writeAtomic(this.path("config.json"), JSON.stringify(c, null, 2) + "\n");
+    });
   }
   state() {
-    let raw;
-    try {
-      raw = readFileSync2(this.path("state.json"), "utf8");
-    } catch (e) {
-      if (e.code === "ENOENT") throw new Error("recording state is missing; run `understand init --force`");
-      throw e;
-    }
-    return JSON.parse(raw);
+    return readJson(this.path("state.json"), { turns: {}, pre: {} });
   }
-  writeState(s) {
-    writeAtomic(this.path("state.json"), JSON.stringify(s, null, 2) + "\n");
-  }
-  updateState(fn) {
+  update(fn) {
     this.withLock(() => {
       const s = this.state();
       fn(s);
-      this.writeState(s);
+      writeJson(this.path("state.json"), s);
     });
   }
-  session(s, id) {
-    return id && s.sessions[id] || { turn: 0, hooked: false };
-  }
-  decisions() {
-    return readJsonl(this.path("decisions.jsonl")).filter((d) => /^D\d+$/.test(d.id));
-  }
-  edits() {
-    return readJsonl(this.path("edits.jsonl")).filter((e) => /^E\d+$/.test(e.id));
-  }
-  linkRecords() {
-    return readJsonl(this.path("links.jsonl")).filter((l) => /^D\d+$/.test(l.decision));
-  }
-  ignoredWrites() {
-    return readJsonl(this.path("ignored.jsonl"));
-  }
-  addDecision(d) {
-    return this.withLock(() => {
-      const rec = { id: `D${nextNumber(this.decisions().map((x) => x.id))}`, ...d };
-      append(this.path("decisions.jsonl"), rec);
-      return rec;
-    });
-  }
-  addEdit(e) {
-    return this.withLock(() => {
-      const rec = { id: `E${nextNumber(this.edits().map((x) => x.id))}`, ...e };
-      append(this.path("edits.jsonl"), rec);
-      return rec;
-    });
-  }
-  addLink(l) {
-    this.withLock(() => append(this.path("links.jsonl"), l));
-  }
-  addIgnoredWrite(file) {
-    this.withLock(() => append(this.path("ignored.jsonl"), { file, ts: (/* @__PURE__ */ new Date()).toISOString() }));
-  }
-  /** Edit id → decision id, from adoption by `decide` or `link`. First claim wins. */
-  links() {
-    const m = /* @__PURE__ */ new Map();
-    const all = [...this.decisions().map((d) => ({ decision: d.id, adopts: d.adopts, ts: d.ts })), ...this.linkRecords()];
-    all.sort((a, b) => a.ts.localeCompare(b.ts));
-    for (const r of all) for (const id of r.adopts) if (!m.has(id)) m.set(id, r.decision);
-    return m;
-  }
-  claims() {
-    const out = [];
-    for (const r of [...this.decisions().map((d) => ({ ...d, decision: d.id })), ...this.linkRecords()]) {
-      const edits = new Set(r.claimable ?? []);
-      for (const spec of r.for ?? []) out.push({ decision: r.decision, spec, edits });
-    }
-    return out;
-  }
-  /** Agent edits from this session's current turn, explained or not. */
-  turnEdits(session) {
-    const turn = this.session(this.state(), session).turn;
-    return this.edits().filter((e) => !e.unverified && e.session === session && e.turn === turn);
+  turn(session) {
+    return session && this.state().turns[session] || 0;
   }
   /**
-   * Agent edits from this session's current turn that no decision explains yet. Earlier turns are
-   * closed: whatever they left unexplained stays unexplained rather than being explained later.
+   * Snapshots are written only to our own object store, so they never depend on the repo's objects
+   * surviving a `git gc`. Reads may also see the repo's objects (for merge-base comparisons).
    */
-  unlinkedEdits(session) {
-    const links = this.links();
-    const turn = this.session(this.state(), session).turn;
-    return this.edits().filter((e) => !e.unverified && !links.has(e.id) && e.session === session && e.turn === turn);
+  writeEnv() {
+    const wt = createHash("sha1").update(realpathSync(this.root)).digest("hex").slice(0, 10);
+    mkdirSync4(this.path("objects"), { recursive: true, mode: DIR_MODE });
+    return { GIT_INDEX_FILE: this.path(`index-${wt}`), GIT_OBJECT_DIRECTORY: this.path("objects") };
+  }
+  readEnv() {
+    return { ...this.writeEnv(), GIT_ALTERNATE_OBJECT_DIRECTORIES: this.repoObjects };
+  }
+  snapshot() {
+    return this.withLock(() => writeWorktreeTree(this.root, this.writeEnv()));
+  }
+  /**
+   * A feature branch is one recording across sessions; trunk gets one per session; a detached HEAD
+   * one per session and commit (checking out another commit is not an edit).
+   */
+  scope(session) {
+    const branch = currentBranch(this.root);
+    if (branch && branch !== trunkBranch(this.root)) return `branch:${branch}`;
+    return `session:${session ?? "none"}:${branch ?? `detached@${headCommit(this.root)?.slice(0, 12)}`}`;
+  }
+  /** Tree of the committed HEAD, written into the private store (reads it via the repo's objects). */
+  headTree() {
+    const head = headCommit(this.root);
+    if (!head) return null;
+    return git(this.root, ["rev-parse", `${head}^{tree}`], this.readEnv()).trim();
+  }
+  index() {
+    return readJson(this.path("recordings.json"), {});
+  }
+  active(session) {
+    const id = this.index()[this.scope(session)];
+    return id ? new Store(this, id) : null;
+  }
+  /** The current scope's recording, started now if there is none (from `baseTree`, or the current worktree). */
+  recording(session, baseTree) {
+    return this.withLock(() => {
+      const existing = this.active(session);
+      if (existing) return existing;
+      const scope = this.scope(session);
+      const id = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14) + "-" + randomBytes2(3).toString("hex");
+      const tree = baseTree ?? this.snapshot();
+      const store = new Store(this, id);
+      mkdirSync4(store.dir, { recursive: true });
+      const branch = currentBranch(this.root);
+      const slug = (branch ?? "session").replace(/[^\w.-]+/g, "-");
+      store.writeConfig({ scope, branch, session, baseTree: tree, createdAt: (/* @__PURE__ */ new Date()).toISOString(), logFile: `${id.slice(0, 8)}-${slug}-${id.slice(-6)}.tsv` });
+      store.writeState({ lastTree: tree });
+      writeJson(this.path("recordings.json"), { ...this.index(), [scope]: id });
+      return store;
+    });
+  }
+  /**
+   * The work moved to another scope without changing (`git switch -c`, `git branch -m`):
+   * the recording follows it, so its decisions stay with the code they explain.
+   */
+  carry(from, to) {
+    return this.withLock(() => {
+      const idx = this.index();
+      if (!idx[from] || idx[to]) return false;
+      idx[to] = idx[from];
+      delete idx[from];
+      writeJson(this.path("recordings.json"), idx);
+      const store = new Store(this, idx[to]);
+      store.writeConfig({ ...store.config(), scope: to, branch: currentBranch(this.root) });
+      return true;
+    });
+  }
+  /** End the current scope's recording; the next tool call starts a new one. */
+  reset(session) {
+    return this.withLock(() => {
+      const idx = this.index();
+      const scope = this.scope(session);
+      if (!idx[scope]) return false;
+      delete idx[scope];
+      writeJson(this.path("recordings.json"), idx);
+      return true;
+    });
   }
 };
-function ownerGone(owner) {
-  let pid;
-  try {
-    pid = Number(readFileSync2(owner, "utf8").split(" ")[0]);
-  } catch {
-    return false;
-  }
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (e) {
-    return e.code === "ESRCH";
-  }
-}
-var nextNumber = (ids) => Math.max(0, ...ids.map((id) => Number(id.slice(1)) || 0)) + 1;
-function append(file, rec) {
-  let prefix = "";
-  try {
-    const cur = readFileSync2(file, "utf8");
-    if (cur && !cur.endsWith("\n")) prefix = "\n";
-  } catch {
-  }
-  appendFileSync2(file, prefix + JSON.stringify(rec) + "\n");
-}
-function writeAtomic(file, text) {
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, file);
-}
-function readJsonl(file) {
-  if (!existsSync2(file)) return [];
-  const out = [];
-  for (const line of readFileSync2(file, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      out.push(JSON.parse(line));
-    } catch {
-      process.stderr.write(`warning: skipping a corrupt line in ${file}
-`);
-    }
-  }
-  return out;
-}
 
 // src/hook.ts
-var FILE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
-function runHook(event) {
-  let store2 = null;
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync5, realpathSync as realpathSync2 } from "node:fs";
+import { basename as basename2, dirname as dirname3, isAbsolute as isAbsolute3, join as join7, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
+var FILE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"]);
+function toolFiles(root, tool, input) {
+  if (tool === "apply_patch") {
+    const patch = String(input.command ?? input.patch ?? input.input ?? "");
+    const paths = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)].map((m) => (m[1] ?? m[2]).trim());
+    return paths.map((p) => relFile(root, p)).filter((p) => !!p);
+  }
+  const file2 = relFile(root, input.file_path ?? input.notebook_path);
+  return file2 ? [file2] : [];
+}
+var PR_CREATE = /\bgh\b[^\n;&|]*\bpr\s+create\b/;
+var COMMIT = /\bgit\b[^\n;&|]*\bcommit\b/;
+var TRIVIAL_LINES = 3;
+var RULES = `Understand keeps a decision log of this session for code review.
+After the edits for each design choice (yours, or one the user made), run:
+  understand decide --by agent|human --title "<the choice>" --why "<the reason, paraphrased>" \\
+    --for <file>:<Symbol>   (repeat for every function, method, type, and import it shaped; a bare <file> covers the whole file)
+    [--alt "<rejected option>: <why not>"] [--risk "<assumption or risk>"]
+A decision explains only what it names. Record it right after its edits; one decision per distinct choice.
+Mechanical batches: \`understand decide --mechanical --title \u2026 --for \u2026\`. Edits that follow a decision you recorded
+earlier: \`understand link D<n> --for \u2026\`. Paraphrase; never quote the user. Decisions are also written to .decisions/ in
+the repo and committed with your commits, so keep them free of secrets. The understand:record skill has details.
+After opening a pull request, use the understand:explain skill to produce its review page.
+If the user doesn't want this in a repo, \`understand off\` stops it there (\`--everywhere\` for all repos).`;
+async function runHook(event) {
+  let home2 = null;
   try {
-    const p = JSON.parse(readFileSync3(0, "utf8") || "{}");
+    const p = JSON.parse(readFileSync5(0, "utf8") || "{}");
     const root = repoRoot(p.cwd || process.cwd());
     if (!root) return;
-    store2 = new Store(root);
-    if (!store2.exists()) return;
-    if (process.env.UNDERSTAND_DEBUG) appendFileSync3(store2.path("hook-payloads.jsonl"), JSON.stringify({ event, ...p }) + "\n");
-    const out = handlers[event]?.(store2, p);
+    home2 = Home.forRepo(root);
+    if (home2.isOff()) return;
+    if (process.env.UNDERSTAND_DEBUG) log("hook-payloads.jsonl", JSON.stringify({ event, ...p }));
+    const out = await handlers[event]?.(home2, p);
     if (out) process.stdout.write(JSON.stringify(out));
   } catch (err) {
-    const msg = `${(/* @__PURE__ */ new Date()).toISOString()} ${event} ${err.stack}`;
-    try {
-      if (store2) appendFileSync3(store2.path("hook-errors.log"), msg + "\n");
-    } catch {
-    }
+    if (home2) log("hook-errors.log", `${(/* @__PURE__ */ new Date()).toISOString()} ${event} ${err.stack}`);
     process.stderr.write(`understand: recording failed during ${event}: ${err.message}
 `);
     if (event === "stop") process.stdout.write(JSON.stringify({ systemMessage: `Understand could not check this turn: ${err.message}` }));
   }
 }
-function touchSession(s, session) {
-  s.updateState((st) => {
-    if (!session) return;
-    st.sessions[session] = { turn: st.sessions[session]?.turn ?? 0, hooked: true };
-    st.lastHookSession = session;
-  });
+function log(file2, line) {
+  try {
+    mkdirSync5(understandHome(), { recursive: true, mode: 448 });
+    appendFileSync2(join7(understandHome(), file2), line + "\n");
+  } catch {
+  }
 }
+var context = (hookEventName, additionalContext) => ({ hookSpecificOutput: { hookEventName, additionalContext } });
 var handlers = {
-  "session-start"(s, p) {
+  "session-start"(home2, p) {
     const session = p.session_id ?? null;
-    touchSession(s, session);
-    capture(s, { session, tool: "checkpoint", unverified: true });
-    const recent = s.decisions().slice(-15).map((d) => `  ${d.id} [${d.by}] ${d.title}`).join("\n");
-    return {
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: "Understand is recording decisions in this repo (.understand/). Follow the understand:record skill: after the edits for each design choice (yours or the user's), run `understand decide` naming what it shaped with --for. Paraphrase, never quote the user." + (recent ? `
-Decisions recorded so far:
-${recent}` : "")
-      }
-    };
+    drain(home2);
+    home2.update((st) => {
+      if (session) st.lastHookSession = session;
+    });
+    const rec = home2.active(session);
+    if (rec) capture(rec, { session, tool: "checkpoint", unverified: true });
+    const recent = rec?.decisions().slice(-15).map((d) => `  ${d.id} [${d.by}] ${d.title}`).join("\n");
+    return context("SessionStart", RULES + cliNote() + (recent ? `
+Decisions already recorded here:
+${recent}` : ""));
   },
-  "pre-tool-use"(s, p) {
+  "pre-tool-use"(home2, p) {
     const session = p.session_id ?? null;
-    touchSession(s, session);
-    capture(s, { session, tool: "checkpoint", unverified: true });
+    drain(home2);
+    home2.update((st) => {
+      if (!session) return;
+      st.lastHookSession = session;
+      st.pre[session] = { scope: home2.scope(session), since: Math.floor(Date.now() / 1e3) };
+    });
+    const rec = home2.recording(session);
+    capture(rec, { session, tool: "checkpoint", unverified: true });
+    if (p.tool_name === "Bash" && COMMIT.test(String(p.tool_input?.command ?? ""))) stageLog(home2.root, writeLog(rec));
   },
-  "post-tool-use"(s, p) {
+  /** Also runs for failed tool calls (PostToolUseFailure): a command that errors after writing files still wrote them. */
+  "post-tool-use"(home2, p) {
     const session = p.session_id ?? null;
     const tool = p.tool_name ?? "";
     const input = p.tool_input ?? {};
-    const file = FILE_TOOLS.has(tool) ? relFile(s.root, input.file_path ?? input.notebook_path) : null;
-    capture(s, { session, tool, command: tool === "Bash" ? String(input.command ?? "") : void 0, ...FILE_TOOLS.has(tool) ? { only: file ?? "\0" } : {} });
-    if (file && isIgnored(s.root, file)) s.addIgnoredWrite(file);
+    const command = tool === "Bash" ? String(input.command ?? "") : "";
+    const pre = session ? home2.state().pre[session] : void 0;
+    home2.update((st) => {
+      if (session) delete st.pre[session];
+    });
+    const scope = home2.scope(session);
+    if (pre && pre.scope !== scope) {
+      const branch = currentBranch(home2.root);
+      if (branch && branchBornSince(home2.root, branch, pre.since)) {
+        home2.carry(pre.scope, scope);
+      } else {
+        capture(home2.recording(session, home2.headTree() ?? void 0), { session, tool: "branch switch", unverified: true });
+        return;
+      }
+    }
+    const rec = home2.recording(session);
+    const files = FILE_TOOLS.has(tool) ? toolFiles(home2.root, tool, input) : null;
+    capture(rec, {
+      session,
+      tool,
+      transcript: p.transcript_path ?? void 0,
+      toolUseId: p.tool_use_id,
+      ...command ? { command } : {},
+      ...files ? { only: files } : {}
+    });
+    for (const f of files ?? []) if (isIgnored(home2.root, f)) rec.addIgnoredWrite(f);
+    const problems = drain(home2);
+    if (problems.length) return context("PostToolUse", `Understand couldn't record: ${problems.join("; ")}`);
+    if (PR_CREATE.test(command) && p.hook_event_name === "PostToolUse") {
+      return context("PostToolUse", "Understand: you opened a pull request. Now use the understand:explain skill to write its review page against the PR's base branch, then add a short summary to the PR description with `gh pr edit`.");
+    }
   },
-  stop(s, p) {
+  async stop(home2, p) {
     const session = p.session_id ?? null;
+    drain(home2);
+    const endTurn = () => home2.update((st) => {
+      if (session) st.turns[session] = (st.turns[session] ?? 0) + 1;
+    });
+    const rec = home2.active(session);
+    if (!rec) return endTurn();
     let captureError = "";
     try {
-      capture(s, { session, tool: "checkpoint", unverified: true });
+      capture(rec, { session, tool: "checkpoint", unverified: true });
     } catch (err) {
       captureError = ` (Understand also couldn't snapshot the worktree: ${err.message})`;
     }
-    const pending = s.unlinkedEdits(session);
-    if (pending.length && !p.stop_hook_active) {
-      const files = [...new Set(pending.flatMap((e) => e.files))];
+    const turn = new Set(rec.turnEdits(session).map((e) => e.id));
+    const unnamed = turn.size && !p.stop_hook_active ? (await extract(rec)).symbols.filter((s) => s.gaps.unlinked.some((id) => turn.has(id))) : [];
+    const weight = unnamed.reduce((n, s) => {
+      const lines = s.rows.filter((r) => (r.t === "+" || r.t === "-") && r.p && s.gaps.unlinked.includes(r.p) && turn.has(r.p)).length;
+      return n + (lines || TRIVIAL_LINES + 1);
+    }, 0);
+    if (weight > TRIVIAL_LINES) {
+      const names = unnamed.map((s) => `${s.file}:${s.kind === "other" || s.kind === "file" ? "" : s.name}`.replace(/:$/, ""));
       return {
         decision: "block",
-        reason: `Understand: ${pending.length} edit${pending.length > 1 ? "s" : ""} this session ha${pending.length > 1 ? "ve" : "s"} no recorded decision (${files.slice(0, 6).join(", ")}${files.length > 6 ? ", \u2026" : ""}). If they came from a decision you already recorded, run \`understand link D<n> --for <file>:<Symbol>\`. Otherwise record why with \`understand decide --title \u2026 --why \u2026 --by agent|human --for <file>:<Symbol>\`, or \`understand decide --mechanical --title \u2026\` if they were mechanical. Then finish your reply.` + captureError
+        reason: `Understand: this turn changed ${unnamed.length} symbol${unnamed.length > 1 ? "s" : ""} no decision names: ${names.slice(0, 12).join(", ")}${names.length > 12 ? ", \u2026" : ""}. Name each on the decision it belongs to with \`understand link D<n> --for <file>:<Symbol>\`, record a new one with \`understand decide \u2026 --for \u2026\`, or use \`understand decide --mechanical --title \u2026 --for \u2026\`. Then finish your reply.` + captureError
       };
     }
-    s.updateState((st) => {
-      if (session) st.sessions[session] = { hooked: true, turn: (st.sessions[session]?.turn ?? 0) + 1 };
-    });
+    endTurn();
   }
 };
+function cliNote() {
+  if (!process.env.PLUGIN_ROOT) return "";
+  return `
+In this environment run the CLI as \`${join7(process.env.PLUGIN_ROOT, "bin", "understand")}\` wherever these rules or the skills say \`understand\`.`;
+}
+function stageLog(root, log2) {
+  if (!log2) return;
+  try {
+    execFileSync3("git", ["-C", root, "add", "--", log2], { stdio: "ignore" });
+  } catch {
+  }
+}
 function real(p) {
   try {
-    return realpathSync3(p);
+    return realpathSync2(p);
   } catch {
     try {
-      return join3(realpathSync3(dirname(p)), basename(p));
+      return join7(realpathSync2(dirname3(p)), basename2(p));
     } catch {
       return p;
     }
@@ -1453,86 +1953,39 @@ function real(p) {
 }
 function relFile(root, p) {
   if (typeof p !== "string" || !p) return null;
-  const rel = relative2(real(root), real(isAbsolute2(p) ? p : resolve(root, p)));
-  if (rel === ".." || rel.startsWith(".." + sep) || isAbsolute2(rel)) return null;
-  if (rel === ".understand" || rel.startsWith(".understand" + sep)) return null;
+  const rel = relative2(real(root), real(isAbsolute3(p) ? p : resolve2(root, p)));
+  if (rel === ".." || rel.startsWith(".." + sep2) || isAbsolute3(rel)) return null;
   return rel;
 }
 
-// src/narration.ts
-import { existsSync as existsSync3, readFileSync as readFileSync4 } from "node:fs";
-function readNarration(path) {
-  if (!existsSync3(path)) return null;
-  return JSON.parse(readFileSync4(path, "utf8"));
-}
-var ATTN = /* @__PURE__ */ new Set(["careful", "skim", "mechanical"]);
-function check(x, n) {
-  const errors = [];
-  const ids = new Set(x.symbols.map((s) => s.id));
-  const decs = new Set(x.decisions.map((d) => d.id));
-  const placed = /* @__PURE__ */ new Map();
-  if (!n.title?.trim()) errors.push("title is empty");
-  if (!n.intent?.trim()) errors.push("intent is empty");
-  (n.chapters ?? []).forEach((c, i) => {
-    if (!c.title?.trim()) errors.push(`chapter ${i + 1} has no title`);
-    for (const id of c.symbols ?? []) {
-      if (!ids.has(id)) errors.push(`chapter ${i + 1} lists unknown symbol ${id}`);
-      else if (placed.has(id)) errors.push(`${id} is in chapters ${placed.get(id) + 1} and ${i + 1}`);
-      else placed.set(id, i);
-    }
-  });
-  for (const [id, note] of Object.entries(n.symbols ?? {})) {
-    if (!ids.has(id)) {
-      errors.push(`notes for unknown symbol ${id}`);
-      continue;
-    }
-    if (!note.summary?.trim()) errors.push(`${id}: summary is empty`);
-    if (!ATTN.has(note.attention)) errors.push(`${id}: attention must be careful, skim or mechanical`);
-    for (const d of note.decisions ?? []) if (!decs.has(d)) errors.push(`${id}: unknown decision ${d}`);
-    for (const r of note.related ?? []) if (!ids.has(r)) errors.push(`${id}: related symbol ${r} does not exist`);
-  }
-  const missing = x.symbols.filter((s) => !placed.has(s.id) || !n.symbols?.[s.id]).map((s) => s.id);
-  return { errors, missing };
-}
-
 // src/render.ts
-import { createHash } from "node:crypto";
-import { readFileSync as readFileSync5 } from "node:fs";
+import { createHash as createHash2 } from "node:crypto";
+import { readFileSync as readFileSync6 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var ATTN2 = /* @__PURE__ */ new Set(["careful", "skim", "mechanical"]);
-var STATUS = /* @__PURE__ */ new Set(["added", "removed", "modified", "moved"]);
 function viewerData(x, n) {
   const sessionNo = new Map(x.sessions.map((s, i) => [s, i + 1]));
   const domId = new Map(x.symbols.map((s, i) => [s.id, `s${i}`]));
-  const decIds = new Set(x.decisions.map((d) => d.id));
+  const decById = new Map(x.decisions.map((d) => [d.id, d]));
   const supersededBy = new Map(x.decisions.filter((d) => d.supersedes).map((d) => [d.supersedes, d.id]));
-  const placed = /* @__PURE__ */ new Set();
-  const chapters = (n?.chapters ?? []).map((c, i) => {
-    const syms = c.symbols.filter((id) => domId.has(id) && !placed.has(id));
-    syms.forEach((id) => placed.add(id));
-    return { id: `c${i}`, title: String(c.title), sum: String(c.summary ?? ""), syms: syms.map((id) => domId.get(id)) };
-  });
-  const rest = x.symbols.filter((s) => !placed.has(s.id));
-  if (rest.length) {
-    chapters.push({
-      id: "c-rest",
-      title: n ? "Not placed in the story" : "Changes",
-      sum: n ? "The narration didn't cover these symbols. They're listed so nothing is hidden." : "No narration yet. Run the narrate skill to explain these changes.",
-      syms: rest.map((s) => domId.get(s.id))
-    });
-  }
+  const chapters = n?.chapters?.length ? explicitChapters(x, n, domId) : decisionChapters(x, domId);
   const symbols = x.symbols.map((s) => {
     const note = n?.symbols?.[s.id];
-    const later = [.../* @__PURE__ */ new Set([...s.later, ...note?.decisions ?? []])].filter((d) => decIds.has(d) && !s.decisions.includes(d));
+    const later = [.../* @__PURE__ */ new Set([...s.later, ...note?.decisions ?? []])].filter((d) => decById.has(d) && !s.decisions.includes(d));
     const unlinked = new Set(s.gaps.unlinked);
     const rows = s.rows.map((r) => {
       const flag = r.t === "+" || r.t === "-" ? r.p === "outside" ? "o" : r.p === "before" ? "b" : r.p && unlinked.has(r.p) ? "u" : void 0 : void 0;
       return { t: r.t, o: r.o, n: r.n, s: r.s, ...flag ? { x: flag } : {} };
     });
-    const mechanicalOnly = s.decisions.length > 0 && s.decisions.every((d) => x.decisions.find((z) => z.id === d)?.mechanical);
+    const decs = s.decisions.map((d) => decById.get(d)).filter(Boolean);
+    const mechanicalOnly = decs.length > 0 && decs.every((d) => d.mechanical);
     const attn = note?.attention && ATTN2.has(note.attention) ? note.attention : mechanicalOnly ? "mechanical" : "skim";
-    const shown = [...s.decisions, ...later].map((d) => x.decisions.find((z) => z.id === d)).map((d) => d && [d.id, d.title, d.why, d.alternatives]);
-    const fp = createHash("sha1").update(JSON.stringify([s.rows, s.gaps, later, shown, note ?? null])).digest("hex").slice(0, 10);
+    const risks = [
+      ...decs.flatMap((d) => (d.risks ?? []).map((text) => ({ text, from: d.id }))),
+      ...note?.risk ? [{ text: note.risk, from: null }] : []
+    ];
+    const shown = [...s.decisions, ...later].map((d) => decById.get(d)).map((d) => d && [d.id, d.title, d.why, d.alternatives, d.risks]);
+    const fp = createHash2("sha1").update(JSON.stringify([s.rows, s.gaps, later, shown, note ?? null])).digest("hex").slice(0, 10);
     return {
       id: domId.get(s.id),
       key: `${s.id}@${fp}`,
@@ -1540,33 +1993,35 @@ function viewerData(x, n) {
       kind: s.kind,
       name: s.name,
       sig: s.sig,
-      status: STATUS.has(s.status) ? s.status : "modified",
+      status: s.status,
       moved: s.movedFrom,
       note: s.note,
       rows,
       dec: s.decisions,
       later,
-      gaps: { outside: s.gaps.outside, before: s.gaps.before, unlinked: s.gaps.unlinked.length },
-      explained: s.explained,
-      attn,
       sum: note?.summary ?? null,
       why: note?.why,
       how: note?.how,
-      risk: note?.risk,
+      risks,
+      gaps: { outside: s.gaps.outside, before: s.gaps.before, unlinked: s.gaps.unlinked.length },
+      explained: s.explained,
+      attn,
       rel: (note?.related ?? []).map((r) => domId.get(r)).filter(Boolean)
     };
   });
   return {
-    title: n?.title ?? "Unnarrated changes",
+    title: n?.title || `Changes on ${x.startedOn}`,
     intent: n?.intent ?? "",
     branch: x.branch,
     startedOn: x.startedOn,
-    base: x.base.slice(0, 8),
+    baseLabel: x.baseLabel,
+    headLabel: x.headLabel,
     generatedAt: x.generatedAt,
     sessions: x.sessions.length,
     span: x.span,
     files: x.files,
     ignoredWrites: x.ignoredWrites,
+    byName: x.byName,
     warnings: x.warnings,
     decisions: x.decisions.map((d) => ({
       id: d.id,
@@ -1574,6 +2029,7 @@ function viewerData(x, n) {
       title: d.title,
       ctx: d.why,
       alts: d.alternatives,
+      risks: d.risks ?? [],
       supersedes: d.supersedes,
       supersededBy: supersededBy.get(d.id),
       mechanical: !!d.mechanical,
@@ -1583,40 +2039,80 @@ function viewerData(x, n) {
     symbols
   };
 }
+function explicitChapters(x, n, domId) {
+  const placed = /* @__PURE__ */ new Set();
+  const out = (n.chapters ?? []).map((c) => {
+    const syms = c.symbols.filter((id) => domId.has(id) && !placed.has(id));
+    syms.forEach((id) => placed.add(id));
+    return { title: String(c.title), sum: String(c.summary ?? ""), syms: syms.map((id) => domId.get(id)) };
+  });
+  const rest = x.symbols.filter((s) => !placed.has(s.id));
+  if (rest.length) out.push({ title: "Not placed in the reading order", sum: "The explanation didn't place these. They're listed so nothing is hidden.", syms: rest.map((s) => domId.get(s.id)) });
+  return out;
+}
+function decisionChapters(x, domId) {
+  const order = new Map(x.decisions.map((d, i) => [d.id, i]));
+  const next = new Map(x.decisions.filter((d) => d.supersedes).map((d) => [d.supersedes, d.id]));
+  const final = (id) => {
+    const seen = /* @__PURE__ */ new Set();
+    while (next.has(id) && !seen.has(id)) {
+      seen.add(id);
+      id = next.get(id);
+    }
+    return id;
+  };
+  const home2 = new Map(x.symbols.filter((s) => s.decisions.length).map((s) => [s.id, s.decisions.map(final).reduce((a, b) => order.get(b) > order.get(a) ? b : a)]));
+  const out = [];
+  for (const d of x.decisions) {
+    const syms = x.symbols.filter((s) => home2.get(s.id) === d.id);
+    if (syms.length) out.push({ title: d.title, sum: d.why, syms: syms.map((s) => domId.get(s.id)) });
+  }
+  const placed = new Set(home2.keys());
+  const rest = x.symbols.filter((s) => !placed.has(s.id));
+  if (rest.length) out.push({ title: "Not explained by a recorded decision", sum: "No decision in the log covers these changes.", syms: rest.map((s) => domId.get(s.id)) });
+  return out;
+}
 function renderHtml(x, n) {
-  const tpl = readFileSync5(fileURLToPath2(new URL("./viewer.html", import.meta.url)), "utf8");
+  const tpl = readFileSync6(fileURLToPath2(new URL("./viewer.html", import.meta.url)), "utf8");
   const json = JSON.stringify(viewerData(x, n)).replace(/[<\u2028\u2029]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
-  const title = (n?.title ?? "Changes").replace(/[<>&`"]/g, "");
+  const title = (n?.title || `Changes on ${x.startedOn}`).replace(/[<>&`"]/g, "");
   return tpl.replace("/*__UNDERSTAND_DATA__*/null", () => json).replace("<title>Understand</title>", () => `<title>Understand \xB7 ${title}</title>`);
 }
 
 // src/cli.ts
-var HELP = `understand: record why code changed, then render a reviewable explanation.
+var HELP = `understand: keep a decision log while an agent codes, then explain the diff symbol by symbol.
 
-Usage:
-  understand init [--base <ref>] [--force]   Start recording (baseline = current worktree, or <ref> to widen the diff)
-  understand decide --title <t> --why <w> [--by agent|human] [--for <file>[:<Symbol>]]... [--alt <a>]...
-                   [--supersedes <Dn>] [--mechanical]
-                                             Record a decision; it explains every edit not yet linked to one
-  understand link <Dn> [--for <file>[:<Symbol>]]...
-                                             Attach unlinked edits to a decision recorded earlier
-  understand status                          Decisions, edits, and edits still missing a decision
-  understand decisions                       List every recorded decision
-  understand extract                         Symbol-level diff vs. baseline \u2192 .understand/extract.json
-  understand check                           Validate .understand/narration.json against the diff
-  understand render [--out <file>] [--open]  Write the HTML review page (refuses invalid narration)
-  understand hook <event>                    (internal) Claude Code hook entry point
+Recording is automatic in every git repo once the plugin is installed.
 
-Examples:
-  understand decide --by human --title "Never retry POST requests" \\
-    --why "User said a duplicate charge is worse than a failed request" \\
-    --for client/retry.go:isIdempotent --for client/client.go:Client.Do \\
-    --alt "Idempotency keys: upstream doesn't support them"
-  understand decide --mechanical --title "Rename fetchData to loadUser across callers"
-  understand link D3 --for store/store.go:Store.Due
+Decision log (used by the agent):
+  understand decide --title <t> --why <w> --for <file>[:<Symbol>]... [--by agent|human]
+                   [--alt <a>]... [--risk <r>]... [--supersedes <Dn>] [--mechanical]
+                                             Record a decision; it explains this turn's edits to what it names
+  understand link <Dn> --for <file>[:<Symbol>]...
+                                             A decision recorded earlier also explains these
+  understand decisions                       List the decision log
+
+Review page (pick what to explain; the same choice for all three):
+  understand extract [<range>]               Changed symbols with provenance, and where to write the explanation
+  understand check [<range>]                 Validate that explanation against the diff
+  understand render [<range>] [--out <file>] [--open]
+                                             Write the self-contained HTML page
+  <range>:  --pr <ref>          a pull request: merge-base with <ref> \u2192 HEAD
+            --branch            this branch: merge-base with trunk \u2192 working tree (committed and not)
+            --staged            HEAD \u2192 the staged changes
+            --uncommitted       HEAD \u2192 working tree
+            --commits <a..b>    a commit range, or one commit
+            (none)              where recording started \u2192 working tree
+
+Control:
+  understand status | where                  What's recorded here, and where it's stored
+  understand reset                           End this branch's recording; the next edit starts a new one
+  understand off | on [--everywhere]         Stop or resume recording in this repo (or all repos)
+
+State lives in ${"$"}UNDERSTAND_HOME (default ~/.claude/understand), never inside the repo.
 `;
-var BOOL = /* @__PURE__ */ new Set(["force", "mechanical", "open", "help"]);
-var VALUE = /* @__PURE__ */ new Set(["title", "why", "by", "alt", "for", "supersedes", "base", "out"]);
+var BOOL = /* @__PURE__ */ new Set(["mechanical", "open", "everywhere", "branch", "staged", "uncommitted"]);
+var VALUE = /* @__PURE__ */ new Set(["title", "why", "by", "alt", "for", "risk", "supersedes", "out", "pr", "against", "commits"]);
 function parse(argv) {
   const [cmd = "help", ...rest] = argv;
   const flags = {}, args = [];
@@ -1645,64 +2141,55 @@ function fail(msg) {
 `);
   process.exit(1);
 }
-function store() {
+function rangeOf(flags) {
+  const pr = one(flags, "pr") ?? one(flags, "against");
+  const picked = [
+    ...pr ? [{ kind: "pr", ref: pr }] : [],
+    ...flags.branch ? [{ kind: "branch" }] : [],
+    ...flags.staged ? [{ kind: "staged" }] : [],
+    ...flags.uncommitted ? [{ kind: "uncommitted" }] : [],
+    ...one(flags, "commits") ? [{ kind: "commits", spec: one(flags, "commits") }] : []
+  ];
+  if (picked.length > 1) fail("pick one range: --pr, --branch, --staged, --uncommitted, or --commits");
+  return picked[0] ?? { kind: "recording" };
+}
+function source(h) {
+  return h.active(sessionOf(h)) ?? h;
+}
+var dirOf = (src) => src instanceof Home ? src.path("shared") : src.dir;
+var explanationPath = (src, r) => join8(dirOf(src), "explanations", `${rangeKey(r)}.json`);
+function home() {
   const root = repoRoot(process.cwd());
   if (!root) fail("not inside a git repository");
-  return new Store(root);
+  return Home.forRepo(root);
 }
-function ready() {
-  const s = store();
-  if (!s.exists()) fail("not recording here yet. Run `understand init` first.");
-  s.config();
-  return s;
+function sessionOf(h) {
+  return process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_SESSION_ID || process.env.CLAUDE_SESSION_ID || h.state().lastHookSession || null;
 }
-function sessionOf(s) {
-  return process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || s.state().lastHookSession || null;
+function forSpecs(flags) {
+  const specs = (flags.for ?? []).map((s) => s.trim()).filter(Boolean);
+  if (!specs.length) fail("--for is required: name each file or file:Symbol this decision shaped (a decision explains only what it names)");
+  for (const s of specs) {
+    if (s.startsWith(":")) fail(`--for ${s}: name a file, e.g. --for src/api.ts:fetchJSON`);
+    if (s.endsWith(":")) fail(`--for ${s}: name the symbol after the colon, or drop the colon to name the whole file`);
+  }
+  return specs;
 }
-function newId() {
-  return (/* @__PURE__ */ new Date()).toISOString().replace(/[-:.TZ]/g, "").slice(0, 14) + "-" + randomBytes2(3).toString("hex");
+function record(h, e) {
+  try {
+    const open = !!e.session && !!h.state().pre[e.session];
+    return file(h, e, open ? "own" : "unknown");
+  } catch (err) {
+    if (!isWriteDenied(err)) fail(err.message);
+    enqueue(h.root, e);
+    return null;
+  }
 }
 async function main() {
   const { cmd, args, flags } = parse(process.argv.slice(2));
   switch (cmd) {
-    case "init": {
-      const s = store();
-      s.assertSafe();
-      if (s.exists() && !flags.force) {
-        const c = s.config();
-        console.log(`Already recording since ${c.createdAt} (baseline ${c.base.slice(0, 8)}). Use --force to start over.`);
-        return;
-      }
-      const baseRef = one(flags, "base");
-      let baseTree = null;
-      if (baseRef) {
-        try {
-          baseTree = treeOf(s.root, baseRef);
-        } catch {
-          fail(`--base ${baseRef}: not a commit or tree`);
-        }
-      }
-      s.withLock(() => {
-        mkdirSync2(s.dir, { recursive: true });
-        excludeLogDir(s.root);
-        const fresh = !existsSync4(s.path("config.json"));
-        if (fresh) rmSync2(s.path("index"), { force: true });
-        const tree = snapshot(s);
-        const id = newId();
-        const baseRefName = `refs/understand/${id}`;
-        const base = pinTree(s.root, baseTree ?? tree, baseRefName);
-        if (!fresh) archive(s);
-        s.writeState({ lastTree: tree, sessions: {} });
-        s.writeConfig({ version: 2, id, base, baseRef: baseRefName, initTree: tree, branch: currentBranch(s.root), createdAt: (/* @__PURE__ */ new Date()).toISOString() });
-        console.log(
-          `Recording in ${s.root}. Baseline: ${baseRef ?? "current worktree"} (${base.slice(0, 8)}). Log: .understand/ (git-excluded)` + (baseRef ? `
-Changes already between the baseline and now will show as "before recording": their reasons weren't captured.` : "")
-        );
-      });
-      return;
-    }
     case "decide": {
-      const s = ready();
+      const h = home();
       const title = one(flags, "title")?.trim();
       if (!title) fail("--title is required");
       const mechanical = !!flags.mechanical;
@@ -1710,113 +2197,128 @@ Changes already between the baseline and now will show as "before recording": th
       if (!why && !mechanical) fail("--why is required: paraphrase the reason (use --mechanical for edits with no design choice)");
       const by = one(flags, "by") ?? "agent";
       if (by !== "agent" && by !== "human") fail("--by must be agent or human");
-      const supersedes = one(flags, "supersedes");
-      if (supersedes && !s.decisions().some((d2) => d2.id === supersedes)) fail(`--supersedes ${supersedes}: no such decision`);
-      const d = s.withLock(() => {
-        const session = sessionOf(s);
-        capture(s, { session, tool: s.session(s.state(), session).hooked ? "Bash" : "checkpoint", command: "(changes made in the same command as `understand decide`)" });
-        const adopts = s.unlinkedEdits(session).map((e) => e.id);
-        return s.addDecision({
-          ts: (/* @__PURE__ */ new Date()).toISOString(),
-          session,
-          turn: s.session(s.state(), session).turn,
-          title,
-          why,
-          by,
-          alternatives: flags.alt ?? [],
-          ...flags.for ? { for: flags.for, claimable: s.turnEdits(session).map((e) => e.id) } : {},
-          ...supersedes ? { supersedes } : {},
-          ...mechanical ? { mechanical } : {},
-          adopts
-        });
-      });
-      const files = [...new Set(s.edits().filter((e) => d.adopts.includes(e.id)).flatMap((e) => e.files))];
-      console.log(`${d.id} recorded${d.adopts.length ? `; explains ${d.adopts.length} edit${d.adopts.length > 1 ? "s" : ""} (${files.join(", ")})` : "; no unlinked edits to explain yet"}.`);
+      const input = {
+        title,
+        why,
+        by,
+        alternatives: flags.alt ?? [],
+        risks: flags.risk ?? [],
+        for: forSpecs(flags),
+        ...one(flags, "supersedes") ? { supersedes: one(flags, "supersedes") } : {},
+        ...mechanical ? { mechanical } : {}
+      };
+      const done = record(h, { kind: "decide", session: sessionOf(h), ts: (/* @__PURE__ */ new Date()).toISOString(), input });
+      console.log(!done ? `Recorded for ${input.for.join(", ")}; it will be filed into the log when this command finishes.` : `${done.id} recorded for ${input.for.join(", ")}.${done.log ? ` Shared log: ${done.log} (committed with your changes).` : ""}`);
       return;
     }
     case "link": {
-      const s = ready();
+      const h = home();
       const id = args[0];
-      if (!id || !s.decisions().some((d) => d.id === id)) fail(`usage: understand link <Dn> [--for <file>[:<Symbol>]]... (${id ?? "no id"} is not a recorded decision)`);
-      const adopts = s.withLock(() => {
-        const session = sessionOf(s);
-        capture(s, { session, tool: s.session(s.state(), session).hooked ? "Bash" : "checkpoint", command: "(changes made in the same command as `understand link`)" });
-        const adopts2 = s.unlinkedEdits(session).map((e) => e.id);
-        s.addLink({ decision: id, ts: (/* @__PURE__ */ new Date()).toISOString(), session, turn: s.session(s.state(), session).turn, adopts: adopts2, ...flags.for ? { for: flags.for, claimable: s.turnEdits(session).map((e) => e.id) } : {} });
-        return adopts2;
-      });
-      console.log(`${id} now also explains ${adopts.length} edit${adopts.length === 1 ? "" : "s"}${flags.for ? ` and names ${flags.for.join(", ")}` : ""}.`);
-      return;
-    }
-    case "status": {
-      const s = ready();
-      const c = s.config();
-      const pending = s.unlinkedEdits(sessionOf(s));
-      console.log(`Recording since ${c.createdAt} (started on ${c.branch}), baseline ${c.base.slice(0, 8)}`);
-      console.log(`${s.decisions().length} decisions, ${s.edits().length} captured changes`);
-      if (pending.length) console.log(`${pending.length} edits without a decision: ${[...new Set(pending.flatMap((e) => e.files))].join(", ")}`);
+      if (!id) fail("usage: understand link <Dn> --for <file>[:<Symbol>]...");
+      const specs = forSpecs(flags);
+      record(h, { kind: "link", session: sessionOf(h), ts: (/* @__PURE__ */ new Date()).toISOString(), decision: id, for: specs });
+      console.log(`${id} now also explains ${specs.join(", ")}.`);
       return;
     }
     case "decisions": {
-      const s = ready();
-      for (const d of s.decisions()) {
+      const src = source(home());
+      const list2 = src instanceof Home ? readLogs(src.root) : src.decisions();
+      if (src instanceof Home) console.log(list2.length ? "(from the decision log checked into .decisions/)" : "No decisions recorded here, locally or in .decisions/.");
+      for (const d of list2) {
         console.log(`${d.id} [${d.by}${d.mechanical ? ", mechanical" : ""}]${d.supersedes ? ` (revises ${d.supersedes})` : ""} ${d.title}`);
         if (d.why) console.log(`    why: ${d.why}`);
-        if (d.for?.length) console.log(`    for: ${d.for.join(", ")}`);
+        console.log(`    for: ${d.for.join(", ")}`);
         for (const a of d.alternatives) console.log(`    rejected: ${a}`);
+        for (const r of d.risks ?? []) console.log(`    risk: ${r}`);
       }
+      return;
+    }
+    case "status": {
+      const h = home();
+      const session = sessionOf(h);
+      console.log(h.isOff() ? "Recording is off here (`understand on` resumes it)." : `Recording is on (${h.scope(session)}).`);
+      const rec = h.active(session);
+      if (!rec) return console.log("Nothing recorded yet; the first edit starts a recording.");
+      console.log(`Recording ${rec.id} since ${rec.config().createdAt}: ${rec.decisions().length} decisions, ${rec.edits().length} captured changes.`);
+      const turn = new Set(rec.turnEdits(session).map((e) => e.id));
+      const unnamed = (await extract(rec)).symbols.filter((s) => s.gaps.unlinked.some((id) => turn.has(id)));
+      if (unnamed.length) console.log(`Changed this turn, not named by any decision: ${unnamed.map((s) => `${s.file}:${s.name}`).join(", ")}`);
+      return;
+    }
+    case "where": {
+      const h = home();
+      console.log(h.active(sessionOf(h))?.dir ?? h.dir);
+      return;
+    }
+    case "reset": {
+      const h = home();
+      console.log(h.reset(sessionOf(h)) ? "Ended this recording; the next edit starts a new one." : "Nothing was being recorded here.");
+      return;
+    }
+    case "off":
+    case "on": {
+      const file2 = flags.everywhere ? join8(understandHome(), "off") : home().path("off");
+      mkdirSync6(dirname4(file2), { recursive: true, mode: 448 });
+      if (cmd === "off") writeFileSync3(file2, (/* @__PURE__ */ new Date()).toISOString() + "\n");
+      else rmSync3(file2, { force: true });
+      if (cmd === "on" && !flags.everywhere && home().isOff()) console.log("Recording is still off here: `understand off --everywhere` (or UNDERSTAND_DISABLE) applies to every repo. Run `understand on --everywhere`.");
+      else console.log(`Recording is ${cmd}${flags.everywhere ? " everywhere" : " in this repo"}.`);
       return;
     }
     case "extract": {
-      const s = ready();
-      const x = await extract(s);
-      writeFileSync2(s.path("extract.json"), JSON.stringify(x, null, 2));
+      const src = source(home());
+      const range = rangeOf(flags);
+      const x = await extract(src, range);
+      mkdirSync6(dirOf(src), { recursive: true });
+      writeFileSync3(join8(dirOf(src), "extract.json"), JSON.stringify(x, null, 2));
       printExtract(x);
       console.log(`
-Full detail (with code and per-line provenance): .understand/extract.json`);
+Full detail (code and per-line provenance): ${join8(dirOf(src), "extract.json")}`);
+      console.log(`Write the explanation for this range to: ${explanationPath(src, range)}`);
       return;
     }
     case "check": {
-      const s = ready();
-      const n = readNarration(s.path("narration.json"));
-      if (!n) fail("no .understand/narration.json yet");
-      const x = await extract(s);
+      const src = source(home());
+      const range = rangeOf(flags);
+      const n = readExplanation(explanationPath(src, range));
+      if (!n) fail(`no explanation for this range yet (${explanationPath(src, range)})`);
+      const x = await extract(src, range);
       const r = check(x, n);
       for (const e of r.errors) console.log(`error: ${e}`);
-      if (r.missing.length) console.log(`not narrated or not in a chapter (${r.missing.length}):
+      if (r.missing.length) console.log(`not explained or not in a chapter (${r.missing.length}):
   ${r.missing.join("\n  ")}`);
       if (r.errors.length || r.missing.length) process.exit(1);
-      console.log(`OK: ${x.symbols.length} symbols narrated across ${n.chapters.length} chapters.`);
+      console.log(`OK: ${x.symbols.length} symbols explained across ${n.chapters?.length ?? 0} chapters.`);
       return;
     }
     case "render": {
-      const s = ready();
-      const x = await extract(s);
-      const n = readNarration(s.path("narration.json"));
+      const src = source(home());
+      const range = rangeOf(flags);
+      const x = await extract(src, range);
+      const n = readExplanation(explanationPath(src, range));
       if (n) {
         const r = check(x, n);
-        if (r.errors.length) fail(`narration is invalid (${r.errors.length} errors); fix them first:
+        if (r.errors.length) fail(`explanation is invalid (${r.errors.length} errors); fix them first:
   ${r.errors.join("\n  ")}`);
-        if (r.missing.length) process.stderr.write(`warning: ${r.missing.length} symbols aren't narrated; they'll be listed under "Not placed in the story".
+        if (r.missing.length) process.stderr.write(`warning: ${r.missing.length} symbols aren't explained; they'll be listed separately.
 `);
       }
-      const html = renderHtml(x, n);
       const outFlag = one(flags, "out");
-      const out = outFlag ? resolve2(outFlag) : s.path("reports", `understand-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}.html`);
-      mkdirSync2(dirname2(out), { recursive: true });
-      writeFileSync2(out, html);
-      if (!outFlag) copyFileSync2(out, s.path("reports", "latest.html"));
+      const out = outFlag ? resolve3(outFlag) : join8(dirOf(src), "reports", `understand-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}.html`);
+      mkdirSync6(dirname4(out), { recursive: true });
+      writeFileSync3(out, renderHtml(x, n));
+      if (!outFlag) copyFileSync(out, join8(dirOf(src), "reports", "latest.html"));
       console.log(out);
       if (flags.open) {
         try {
-          execFileSync3(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open", [out]);
+          execFileSync4(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open", [out]);
         } catch {
         }
       }
       return;
     }
     case "hook":
-      runHook(args[0] ?? "");
+      await runHook(args[0] ?? "");
       return;
     case "help":
     case "--help":
@@ -1827,26 +2329,14 @@ Full detail (with code and per-line provenance): .understand/extract.json`);
       fail(`unknown command "${cmd}". Run \`understand help\`.`);
   }
 }
-function archive(s) {
-  let id = "unknown";
-  try {
-    id = s.config().id ?? id;
-  } catch {
-  }
-  const dest = s.path("archive", `${id}-${randomBytes2(2).toString("hex")}`);
-  mkdirSync2(dest, { recursive: true });
-  for (const f of ["decisions.jsonl", "edits.jsonl", "links.jsonl", "ignored.jsonl", "state.json", "narration.json", "config.json"]) {
-    if (existsSync4(s.path(f))) renameSync2(s.path(f), join4(dest, f));
-  }
-}
 function printExtract(x) {
   const byFile = /* @__PURE__ */ new Map();
   for (const s of x.symbols) byFile.set(s.file, [...byFile.get(s.file) ?? [], s]);
-  console.log(`${x.symbols.length} changed symbols in ${byFile.size} files; ${x.decisions.length} decisions.`);
-  for (const [file, syms] of byFile) {
-    const f = x.files[file];
+  console.log(`${x.symbols.length} changed symbols in ${byFile.size} files (${x.baseLabel} \u2192 ${x.headLabel}); ${x.decisions.length} decisions.`);
+  for (const [file2, syms] of byFile) {
+    const f = x.files[file2];
     console.log(`
-${file} (${f.status}${f.note ? `, ${f.note}` : ""})`);
+${file2} (${f.status}${f.note ? `, ${f.note}` : ""})`);
     for (const s of syms) {
       const plus = s.rows.filter((r) => r.t === "+").length, minus = s.rows.filter((r) => r.t === "-").length;
       const tags = [
@@ -1862,4 +2352,9 @@ ${file} (${f.status}${f.note ? `, ${f.note}` : ""})`);
   if (x.ignoredWrites.length) console.log(`
 Written by the agent but ignored by git (not in the diff): ${x.ignoredWrites.join(", ")}`);
 }
-main().catch((e) => fail(e.message ?? String(e)));
+main().catch((e) => {
+  if (isWriteDenied(e)) {
+    fail(`this command can't write Understand's state (${understandHome()}), probably because of a sandbox. Run it again with permission to write outside the workspace (in Codex, request escalated permissions), or add that folder to Codex's \`sandbox_workspace_write.writable_roots\`.`);
+  }
+  fail(e.message ?? String(e));
+});

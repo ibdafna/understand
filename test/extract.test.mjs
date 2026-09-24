@@ -9,11 +9,12 @@ function changes(files) {
   try {
     for (const [p, [before]] of Object.entries(files)) if (before != null) t.write(p, before);
     t.commit();
-    t.u("init");
-    for (const [p, [, after]] of Object.entries(files)) {
-      if (after == null) t.sh("rm", ["-f", p]);
-      else t.write(p, after);
-    }
+    t.bash("apply fixture", () => {
+      for (const [p, [, after]] of Object.entries(files)) {
+        if (after == null) t.sh("rm", ["-f", p]);
+        else t.write(p, after);
+      }
+    });
     const x = t.extract();
     return x.symbols.map((s) => `${s.status} ${s.id.split("#")[1]}${s.movedFrom ? ` from ${s.movedFrom}` : ""}${s.note ? ` (${s.note})` : ""}`);
   } finally {
@@ -95,8 +96,7 @@ test("a file whose only change is its mode is reported", () => {
   try {
     t.write("run.sh", "echo hi\n");
     t.commit();
-    t.u("init");
-    t.sh("chmod", ["+x", "run.sh"]);
+    t.bash("chmod +x run.sh", () => t.sh("chmod", ["+x", "run.sh"]));
     const x = t.extract();
     assert.deepEqual(x.symbols.map((s) => s.id), ["run.sh#file:(file mode)"]);
   } finally {
@@ -112,8 +112,7 @@ test("a tracked file that matches .gitignore is still seen", () => {
     t.sh("git", ["add", ".gitignore"]);
     t.sh("git", ["add", "-f", "secret.ts"]);
     t.sh("git", ["commit", "-qm", "b"]);
-    t.u("init");
-    t.write("secret.ts", "export const k = 2;\n");
+    t.bash("edit secret", () => t.write("secret.ts", "export const k = 2;\n"));
     assert.deepEqual(t.extract().symbols.map((s) => s.id), ["secret.ts#var:k"]);
   } finally {
     t.cleanup();

@@ -3,7 +3,8 @@ import type { FileSymbols, Sym } from "./symbols.js";
 
 /**
  * One diff line. `gap` stands for elided unchanged lines.
- * `p` is provenance for changed lines: an edit id, "outside", or "before" (filled in by extract).
+ * `p` is provenance for changed lines: an edit id, "outside", or "before" (filled in by extract);
+ * `pa` is an added line's number in the version that edit wrote.
  */
 export interface Row {
   t: " " | "+" | "-" | "gap";
@@ -11,6 +12,7 @@ export interface Row {
   n?: number;
   s: string;
   p?: string;
+  pa?: number;
 }
 
 export type Status = "added" | "removed" | "modified" | "moved";
@@ -91,11 +93,12 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
   });
 
   // Phase 1: symbol changes, holding their raw rows until blank-line neighbours are attached.
-  type Pending = Omit<SymChange, "rows"> & { raw: Row[]; full: boolean };
+  type Pending = Omit<SymChange, "rows"> & { raw: Row[] };
   const pending: Pending[] = [];
   const owner = new Map<Row, Pending>();
   const claim = (p: Pending) => { p.raw.forEach((r) => { if (!owner.has(r)) owner.set(r, p); }); pending.push(p); };
-  const status = new Map<string, "added" | "removed" | "same" | "modified">();
+  // Which symbols appeared or disappeared whole (the group-wrapper rule below needs to know).
+  const status = new Map<string, "added" | "removed">();
 
   // Pair symbols by key; duplicates (overloads, several init()) pair by exact content first, then by order.
   const group = (syms: Sym[]) => {
@@ -108,54 +111,60 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
     const oList = [...(olds.get(k) ?? [])], nList = [...(news.get(k) ?? [])];
     for (const n of [...nList]) {
       const i = oList.findIndex((o) => o.cmp === n.cmp);
-      if (i >= 0) { status.set(n.key, "same"); status.set(oList[i].key, "same"); oList.splice(i, 1); nList.splice(nList.indexOf(n), 1); }
+      if (i >= 0) { oList.splice(i, 1); nList.splice(nList.indexOf(n), 1); }
     }
     while (oList.length && nList.length) {
       const a = oList.shift()!, b = nList.shift()!;
-      status.set(a.key, "modified"); status.set(b.key, "modified");
       const ownO = new Set(a.own), ownN = new Set(b.own);
       const raw = rows.filter((r) => (r.t === "-" && ownO.has(r.o!)) || (r.t === "+" && ownN.has(r.n!)) || (r.t === " " && (ownO.has(r.o!) || ownN.has(r.n!))));
       const note = a.iota != null && b.iota != null && a.iota !== b.iota ? `implicit iota value moved from position ${a.iota} to ${b.iota}` : undefined;
-      claim({ ...meta(b), status: "modified", raw, full: false, body: b.cmp, ...(note ? { note } : {}) });
+      claim({ ...meta(b), status: "modified", raw, body: b.cmp, ...(note ? { note } : {}) });
     }
     for (const b of nList) {
       status.set(b.key, "added");
-      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x): x is Row => !!x && x.t !== "-"), full: true, body: b.cmp });
+      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x): x is Row => !!x && x.t !== "-"), body: b.cmp });
     }
     for (const a of oList) {
       status.set(a.key, "removed");
-      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x): x is Row => !!x && x.t !== "+"), full: true, body: a.cmp });
+      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x): x is Row => !!x && x.t !== "+"), body: a.cmp });
     }
   }
-  const covered = new Set<Row>(owner.keys());
+  const attach = (r: Row, to: Pending) => {
+    to.raw.push(r);
+    to.raw.sort((x, y) => at.get(x)! - at.get(y)!);
+    owner.set(r, to);
+  };
 
-  // Group wrapper lines belong to their members only when the whole group appeared or disappeared.
-  for (const g of newSyms?.groups ?? []) {
-    if (g.members.length && g.members.every((k) => status.get(k) === "added")) for (const l of g.lines) { const r = byNew.get(l); if (r?.t === "+") covered.add(r); }
-  }
-  for (const g of oldSyms?.groups ?? []) {
-    if (g.members.length && g.members.every((k) => status.get(k) === "removed")) for (const l of g.lines) { const r = byOld.get(l); if (r?.t === "-") covered.add(r); }
+  // A group that appeared or disappeared whole (`import (` … `)`): its wrapper lines travel with its first member.
+  for (const [groups, want, line, t] of [[newSyms?.groups, "added", byNew, "+"], [oldSyms?.groups, "removed", byOld, "-"]] as const) {
+    for (const g of groups ?? []) {
+      if (!g.members.length || !g.members.every((k) => status.get(k) === want)) continue;
+      const first = pending.find((p) => p.key === g.members[0] && p.status === want);
+      const last = pending.find((p) => p.key === g.members[g.members.length - 1] && p.status === want);
+      if (!first || !last) continue;
+      const start = at.get(first.raw[0]) ?? 0;
+      for (const l of g.lines) {
+        const r = line.get(l);
+        if (r?.t === t && !owner.has(r)) attach(r, at.get(r)! < start ? first : last);
+      }
+    }
   }
 
   // Phase 2: changed blank lines touching a symbol change travel with it (spacing around a new function).
-  const changedLoose = (i: number) => rows[i] && rows[i].t !== " " && !covered.has(rows[i]);
+  const changedLoose = (i: number) => rows[i] && rows[i].t !== " " && !owner.has(rows[i]);
   for (let pass = 0; pass < 2; pass++) {
     const order = pass === 0 ? rows.map((_, i) => i) : rows.map((_, i) => rows.length - 1 - i);
     for (const i of order) {
       if (!changedLoose(i) || rows[i].s.trim() !== "") continue;
       const nb = owner.get(rows[pass === 0 ? i - 1 : i + 1]);
-      if (!nb) continue;
-      nb.raw.push(rows[i]);
-      nb.raw.sort((x, y) => at.get(x)! - at.get(y)!);
-      owner.set(rows[i], nb);
-      covered.add(rows[i]);
+      if (nb) attach(rows[i], nb);
     }
   }
 
-  const out: SymChange[] = pending.map(({ raw, full, ...c }) => ({ ...c, rows: full ? withGaps(raw) : compress(withGaps(raw)) }));
+  const out: SymChange[] = pending.map(({ raw, ...c }) => ({ ...c, rows: c.status === "modified" ? compress(withGaps(raw)) : withGaps(raw) }));
 
   // Phase 3: everything else that changed becomes an "other" hunk. Nothing is dropped.
-  const loose = rows.map((r) => r.t !== " " && !covered.has(r));
+  const loose = rows.map((r) => r.t !== " " && !owner.has(r));
   let i = 0;
   while (i < rows.length) {
     if (!loose[i]) { i++; continue; }

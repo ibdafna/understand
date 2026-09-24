@@ -1,49 +1,48 @@
 # Understand
 
-Agents write more code than anyone reads. Understand records **why** each change was made while the agent works. Afterwards it renders a review page that explains every changed import, function, method, and class next to its diff.
+Agents write more code than anyone reads. Understand keeps a **decision log** while the agent works, and when a pull request is opened it produces a review page that explains every changed import, function, method, and class next to its diff.
 
-- **Record:** while working, the agent logs each decision with `understand decide`: the choice, the reason, who made it (you or the agent), the alternatives it rejected, and which symbols it shaped. Hooks snapshot the worktree around every tool call, so each change is captured exactly, including ones made through the shell.
-- **Narrate:** at the end, the agent turns the log into per-symbol explanations. It orders them as a story, marks how much attention each one needs, and lists the risks.
-- **Stay honest:** every changed line is traced back to the tool call that wrote it. Lines no observed agent tool wrote (your own edits, other programs), agent edits with no decision behind them, and changes made before recording began are marked line by line and flagged **unexplained**. Nothing the narrator writes afterwards can clear that flag.
-- **Review:** a single self-contained HTML file. You can read in story or file order, see the rationale beside the code or on hover, focus on one decision to see everything it touched, and track review progress with `j`/`k`/`x`.
+- **Just works:** install the plugin and use Claude Code as usual. Hooks remind the agent to keep the log, capture every change (including ones made through the shell), and ask for the review page when the agent opens a PR.
+- **Decision log:** each decision records the choice, the reason, who made it (you or the agent), the rejected alternatives, known risks, and exactly which files and symbols it shaped. A decision explains only what it names.
+- **Explain:** the agent turns the log into a note for every changed symbol, puts them in reading order, marks what deserves a careful look, and calls out risks. The page covers the PR's diff: its merge-base to the committed HEAD.
+- **Honest gaps:** every changed line is traced to the tool call that wrote it. Lines no agent tool wrote (your own edits, other programs), agent edits no decision names, and changes from before recording are flagged, line by line. Nothing written afterwards clears a flag.
+- **Review:** one self-contained HTML file. Read in story or file order, see the rationale beside the code or on hover, focus on a decision to see everything it shaped, and track review progress with `j`/`k`/`x`.
 
-See [`examples/todo-due-dates.html`](examples/todo-due-dates.html) for a report produced by a real Claude Code session.
+See [`examples/todo-due-dates.html`](examples/todo-due-dates.html) for a page produced by a real Claude Code session: three commits, a change of mind, and a pull request.
 
-## Use it with Claude Code
+## Install
 
 ```sh
-claude --plugin-dir /path/to/understand          # try it for one session
-# or install it:
 claude plugin marketplace add /path/to/understand
 claude plugin install understand@understand-local
+# or, for one session: claude --plugin-dir /path/to/understand
 ```
 
-In a git repo:
+That's all. `/understand:explain` produces a page any time, for whatever you pick: the branch, staged or uncommitted changes, a commit range, or a PR. `understand off` stops recording in a repo (`--everywhere` for all).
 
-1. `/understand:record` (or `understand init`) starts recording from the current worktree. Use `understand init --base main` to explain a whole branch.
-2. Work as usual. The agent records decisions right after the edits they explain (`understand link D<n>` covers a decision it recorded earlier). If it ends a turn with edits it hasn't explained, the stop hook asks once; anything still unexplained when the turn ends stays that way.
-3. `/understand:narrate` writes the explanation and opens the review page (`.understand/reports/latest.html`).
+**Codex:** the same plugin works with the Codex CLI. Codex doesn't run a plugin's hooks until you approve them: after installing, open `/hooks` in Codex and trust Understand's hooks (again after each update).
 
-Recording is opt-in per repo, and hooks do nothing where `understand init` hasn't run. Everything lives in `.understand/`, which is added to `.git/info/exclude` and never committed.
+**What lands in your repo:** only the decision log, `.decisions/<recording>.tsv`, one row per decision, committed along with the agent's commits so the reasons travel with the code (and anyone can build a page from them). Turn that off with `git config understand.share false`. Everything else (snapshots, provenance, pages) stays in `~/.claude/understand/`.
 
-Requires Node 20+ and git. Each tool call costs two worktree snapshots (about 0.13 s each on a 20,000-file repo).
+**Trunk:** Understand treats the default branch as trunk (one recording per session there, one per branch elsewhere). If it guesses wrong, set it: `git config understand.trunk <branch>`.
+
+Requires Node 20+ and git. Each tool call that can change files costs two worktree snapshots (about 0.13 s each on a 20,000-file repo).
 
 ## Development
 
 ```sh
 npm install
-npm test          # builds dist/ and runs the end-to-end test
+npm test          # builds dist/ and runs the tests
 ```
 
-`dist/` is committed so the plugin runs without an install step. Rebuild with `npm run build` after changing `src/` or `viewer/`.
+`dist/` is committed so the plugin runs without an install step. Rebuild with `npm run build` after changing `src/` or `viewer/`. [`docs/design.md`](docs/design.md) explains how it works and why.
 
 | Path | What it is |
 | --- | --- |
-| `src/cli.ts` | `understand` commands |
-| `src/hook.ts`, `src/capture.ts` | Claude Code hooks; each tool call becomes a snapshot → snapshot transition |
-| `src/store.ts` | the log in `.understand/`: locked, append-only, per-session turns |
+| `hooks/hooks.json` | the hooks that make it automatic |
+| `src/hook.ts`, `src/capture.ts` | hook handlers; each tool call becomes a snapshot → snapshot transition |
+| `src/home.ts`, `src/store.ts` | per-repo state outside the repo; recordings and the decision log |
 | `src/extract/` | tree-sitter symbols (Go, TS/JS, Python), symbol-level diff, per-line provenance |
-| `src/narration.ts` | narration format and `understand check` |
-| `viewer/viewer.html` | the review page template |
-| `skills/` | `record` and `narrate` skills |
-| `mockup/viewer.html` | the original design mockup, with hand-written data |
+| `src/decisionlog.ts` | the shared `.decisions/*.tsv` log |
+| `src/explanation.ts`, `src/render.ts`, `viewer/viewer.html` | the explanation format, its checks, and the page |
+| `skills/record`, `skills/explain` | keeping the log (internal) and writing the page |

@@ -1,11 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, copyFileSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import type { Store } from "./store.js";
 
 export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-export function git(root: string, args: string[], env?: Record<string, string>): string {
+/**
+ * Environment that points git at Understand's private index and object store (outside the repo).
+ * The repo's own objects stay readable through alternates; nothing is written into the repo.
+ */
+export type GitEnv = Record<string, string>;
+
+export function git(root: string, args: string[], env?: GitEnv): string {
   return execFileSync("git", ["-C", root, ...args], {
     encoding: "utf8",
     maxBuffer: 512 * 1024 * 1024,
@@ -14,73 +19,130 @@ export function git(root: string, args: string[], env?: Record<string, string>):
   });
 }
 
+function gitInput(root: string, args: string[], input: string, env?: GitEnv): string {
+  return execFileSync("git", ["-C", root, ...args], { input, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
+}
+
 export function repoRoot(cwd: string): string | null {
   try {
-    return execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
   } catch {
     return null;
   }
 }
 
-export function currentBranch(root: string): string {
-  try {
-    return git(root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
-  } catch {
-    return "(no commits)";
-  }
-}
-
-function gitPath(root: string, name: string): string {
-  const p = git(root, ["rev-parse", "--git-path", name]).trim();
+export function commonDir(root: string): string {
+  const p = git(root, ["rev-parse", "--git-common-dir"]).trim();
   return isAbsolute(p) ? p : join(root, p);
 }
 
-/** Keep .understand/ out of git without touching tracked files. */
-export function excludeLogDir(root: string) {
-  const file = gitPath(root, "info/exclude");
-  const cur = existsSync(file) ? readFileSync(file, "utf8") : "";
-  if (!cur.split("\n").includes(".understand/")) appendFileSync(file, (cur && !cur.endsWith("\n") ? "\n" : "") + ".understand/\n");
+/** Current branch, or null when HEAD is detached. */
+export function currentBranch(root: string): string | null {
+  try {
+    const b = git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).trim();
+    return b || null;
+  } catch {
+    return null;
+  }
+}
+
+export function headCommit(root: string): string | null {
+  try {
+    return git(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Tree hash of the whole worktree, including untracked files and uncommitted changes.
- * Uses a private index so the user's staging area is never touched. The private index
- * starts as a copy of the real one, so tracked-but-ignored files and sparse-checkout
- * (skip-worktree) entries behave exactly as they do for the user's own `git add -A`.
+ * Was this branch created or renamed at or after `since` (unix seconds)? Answered by its reflog, so a
+ * `git switch -c` followed by a commit in the same command still counts as creating it.
  */
-export function snapshot(store: Store): string {
-  return store.withLock(() => {
-    const index = store.path("index");
-    const real = gitPath(store.root, "index");
-    if (existsSync(index) && lstatSync(index).isSymbolicLink()) throw new Error(".understand/index is a symlink; refusing to snapshot through it");
-    if (existsSync(real) && existsSync(index) && realpathSync(index) === realpathSync(real)) throw new Error("private index resolves to the repository's own index");
-    if (!existsSync(index) && existsSync(real)) copyFileSync(real, index);
-    const env = { GIT_INDEX_FILE: index };
-    git(store.root, ["add", "-A", "--", "."], env);
-    return git(store.root, ["write-tree"], env).trim();
+export function branchBornSince(root: string, branch: string, since: number): boolean {
+  let out = "";
+  try {
+    out = git(root, ["reflog", "show", "--date=unix", "--format=%gd%x09%gs", `refs/heads/${branch}`]);
+  } catch {
+    return false;
+  }
+  const entries = out.trim().split("\n").filter(Boolean).map((l) => {
+    const [ref, subject] = l.split("\t");
+    return { time: Number(/@\{(\d+)\}/.exec(ref)?.[1] ?? 0), subject: subject ?? "" };
   });
+  const oldest = entries[entries.length - 1];
+  if (oldest && oldest.time >= since && /^branch: Created/.test(oldest.subject)) return true;
+  return entries.some((e) => e.time >= since && /^Branch: renamed/i.test(e.subject));
 }
 
-/** Pin a tree with a commit + ref so `git gc` never collects the baseline. */
-export function pinTree(root: string, tree: string, ref: string): string {
-  const commit = git(root, ["commit-tree", tree, "-m", "understand baseline"]).trim();
-  git(root, ["update-ref", ref, commit]);
-  return commit;
+/**
+ * The repo's trunk, first match wins: `git config understand.trunk`; a remote's HEAD (origin first);
+ * `init.defaultBranch`; a common name that exists; else the local branch the most others descend from.
+ */
+export function trunkBranch(root: string): string | null {
+  const tryGit = (args: string[]) => { try { return git(root, args).trim(); } catch { return ""; } };
+  const exists = (b: string) => !!b && !!tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${b}`]);
+  const set = tryGit(["config", "--get", "understand.trunk"]);
+  if (set) return set;
+  const remotes = tryGit(["remote"]).split("\n").filter(Boolean).sort((a, b) => (a === "origin" ? -1 : b === "origin" ? 1 : 0));
+  for (const r of remotes) {
+    const head = tryGit(["symbolic-ref", "--quiet", "--short", `refs/remotes/${r}/HEAD`]);
+    if (head) return head.slice(r.length + 1);
+  }
+  const init = tryGit(["config", "--get", "init.defaultBranch"]);
+  if (exists(init)) return init;
+  for (const b of ["main", "master", "trunk", "develop"]) if (exists(b)) return b;
+  // Last resort, only for small repos (it's quadratic and runs in hooks).
+  const branches = tryGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]).split("\n").filter(Boolean);
+  if (branches.length > 12) return null;
+  let best: string | null = null, most = 0;
+  for (const b of branches) {
+    const n = branches.filter((o) => o !== b && isAncestor(root, b, o)).length;
+    if (n > most) { most = n; best = b; }
+  }
+  return best;
 }
 
-export function treeOf(root: string, rev: string): string {
-  return git(root, ["rev-parse", "--verify", "--quiet", `${rev}^{tree}`]).trim();
+function isAncestor(root: string, a: string, b: string): boolean {
+  try {
+    execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function readAt(root: string, treeish: string, path: string): string | null {
+/** Tree hash of the whole worktree (untracked and uncommitted included, .gitignore respected). */
+export function writeWorktreeTree(root: string, env: GitEnv): string {
+  git(root, ["add", "-A", "--", "."], env);
+  // Files the repo tracks despite matching .gitignore are part of the code; `add -A` would skip them.
+  const tracked = git(root, ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"]).split("\0").filter((p) => p && existsSync(join(root, p)));
+  if (tracked.length) gitInput(root, ["--literal-pathspecs", "add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"], tracked.join("\0"), env);
+  return git(root, ["write-tree"], env).trim();
+}
+
+export function treeOf(root: string, rev: string, env?: GitEnv): string {
+  return git(root, ["rev-parse", "--verify", "--quiet", `${rev}^{tree}`], env).trim();
+}
+
+export function readAt(root: string, treeish: string, path: string, env: GitEnv): string | null {
   try {
     return execFileSync("git", ["-C", root, "cat-file", "blob", `${treeish}:${path}`], {
       encoding: "utf8",
       maxBuffer: 512 * 1024 * 1024,
+      env: { ...process.env, ...env },
       stdio: ["ignore", "pipe", "ignore"],
     });
   } catch {
     return null;
+  }
+}
+
+/** Mode + object id of one path in a tree, so a chmod counts as a change. */
+export function entryAt(root: string, tree: string, path: string, env: GitEnv): string {
+  try {
+    return git(root, ["ls-tree", "-z", tree, "--", `:(literal)${path}`], env).split("\t")[0];
+  } catch {
+    return "";
   }
 }
 
@@ -93,8 +155,8 @@ export interface FileChange {
   newSha: string;
 }
 
-export function changedFiles(root: string, from: string, to: string): FileChange[] {
-  const out = git(root, ["diff-tree", "-r", "--no-renames", "--raw", "-z", from || EMPTY_TREE, to]);
+export function changedFiles(root: string, from: string, to: string, env: GitEnv): FileChange[] {
+  const out = git(root, ["diff-tree", "-r", "--no-renames", "--raw", "-z", from || EMPTY_TREE, to], env);
   const parts = out.split("\0");
   const res: FileChange[] = [];
   for (let i = 0; i + 1 < parts.length; i += 2) {

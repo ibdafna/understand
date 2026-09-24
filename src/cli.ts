@@ -1,42 +1,50 @@
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { capture } from "./capture.js";
-import { extract, type Extract } from "./extract/index.js";
-import { currentBranch, excludeLogDir, pinTree, repoRoot, snapshot, treeOf } from "./git.js";
+import { file, enqueue, isWriteDenied, type Entry } from "./decide.js";
+import { readLogs } from "./decisionlog.js";
+import { check, readExplanation } from "./explanation.js";
+import { extract, rangeKey, type Extract, type Range } from "./extract/index.js";
+import { repoRoot } from "./git.js";
+import { Home, understandHome } from "./home.js";
 import { runHook } from "./hook.js";
-import { check, readNarration } from "./narration.js";
 import { renderHtml } from "./render.js";
-import { Store, type Decider } from "./store.js";
+import type { Decider, Store } from "./store.js";
 
-const HELP = `understand: record why code changed, then render a reviewable explanation.
+const HELP = `understand: keep a decision log while an agent codes, then explain the diff symbol by symbol.
 
-Usage:
-  understand init [--base <ref>] [--force]   Start recording (baseline = current worktree, or <ref> to widen the diff)
-  understand decide --title <t> --why <w> [--by agent|human] [--for <file>[:<Symbol>]]... [--alt <a>]...
-                   [--supersedes <Dn>] [--mechanical]
-                                             Record a decision; it explains every edit not yet linked to one
-  understand link <Dn> [--for <file>[:<Symbol>]]...
-                                             Attach unlinked edits to a decision recorded earlier
-  understand status                          Decisions, edits, and edits still missing a decision
-  understand decisions                       List every recorded decision
-  understand extract                         Symbol-level diff vs. baseline → .understand/extract.json
-  understand check                           Validate .understand/narration.json against the diff
-  understand render [--out <file>] [--open]  Write the HTML review page (refuses invalid narration)
-  understand hook <event>                    (internal) Claude Code hook entry point
+Recording is automatic in every git repo once the plugin is installed.
 
-Examples:
-  understand decide --by human --title "Never retry POST requests" \\
-    --why "User said a duplicate charge is worse than a failed request" \\
-    --for client/retry.go:isIdempotent --for client/client.go:Client.Do \\
-    --alt "Idempotency keys: upstream doesn't support them"
-  understand decide --mechanical --title "Rename fetchData to loadUser across callers"
-  understand link D3 --for store/store.go:Store.Due
+Decision log (used by the agent):
+  understand decide --title <t> --why <w> --for <file>[:<Symbol>]... [--by agent|human]
+                   [--alt <a>]... [--risk <r>]... [--supersedes <Dn>] [--mechanical]
+                                             Record a decision; it explains this turn's edits to what it names
+  understand link <Dn> --for <file>[:<Symbol>]...
+                                             A decision recorded earlier also explains these
+  understand decisions                       List the decision log
+
+Review page (pick what to explain; the same choice for all three):
+  understand extract [<range>]               Changed symbols with provenance, and where to write the explanation
+  understand check [<range>]                 Validate that explanation against the diff
+  understand render [<range>] [--out <file>] [--open]
+                                             Write the self-contained HTML page
+  <range>:  --pr <ref>          a pull request: merge-base with <ref> → HEAD
+            --branch            this branch: merge-base with trunk → working tree (committed and not)
+            --staged            HEAD → the staged changes
+            --uncommitted       HEAD → working tree
+            --commits <a..b>    a commit range, or one commit
+            (none)              where recording started → working tree
+
+Control:
+  understand status | where                  What's recorded here, and where it's stored
+  understand reset                           End this branch's recording; the next edit starts a new one
+  understand off | on [--everywhere]         Stop or resume recording in this repo (or all repos)
+
+State lives in ${"$"}UNDERSTAND_HOME (default ~/.claude/understand), never inside the repo.
 `;
 
-const BOOL = new Set(["force", "mechanical", "open", "help"]);
-const VALUE = new Set(["title", "why", "by", "alt", "for", "supersedes", "base", "out"]);
+const BOOL = new Set(["mechanical", "open", "everywhere", "branch", "staged", "uncommitted"]);
+const VALUE = new Set(["title", "why", "by", "alt", "for", "risk", "supersedes", "out", "pr", "against", "commits"]);
 type Flags = Record<string, string[]>;
 
 function parse(argv: string[]): { cmd: string; args: string[]; flags: Flags } {
@@ -66,68 +74,70 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-function store(): Store {
-  const root = repoRoot(process.cwd());
-  if (!root) fail("not inside a git repository");
-  return new Store(root);
+function rangeOf(flags: Flags): Range {
+  const pr = one(flags, "pr") ?? one(flags, "against");
+  const picked: Range[] = [
+    ...(pr ? [{ kind: "pr" as const, ref: pr }] : []),
+    ...(flags.branch ? [{ kind: "branch" as const }] : []),
+    ...(flags.staged ? [{ kind: "staged" as const }] : []),
+    ...(flags.uncommitted ? [{ kind: "uncommitted" as const }] : []),
+    ...(one(flags, "commits") ? [{ kind: "commits" as const, spec: one(flags, "commits")! }] : []),
+  ];
+  if (picked.length > 1) fail("pick one range: --pr, --branch, --staged, --uncommitted, or --commits");
+  return picked[0] ?? { kind: "recording" };
 }
 
-function ready(): Store {
-  const s = store();
-  if (!s.exists()) fail("not recording here yet. Run `understand init` first.");
-  s.config();
-  return s;
+/** The recording to explain from, or (no local recording) the repo home, which reads the checked-in decision log. */
+function source(h: Home): Store | Home {
+  return h.active(sessionOf(h)) ?? h;
+}
+const dirOf = (src: Store | Home) => (src instanceof Home ? src.path("shared") : src.dir);
+const explanationPath = (src: Store | Home, r: Range) => join(dirOf(src), "explanations", `${rangeKey(r)}.json`);
+
+function home(): Home {
+  const root = repoRoot(process.cwd());
+  if (!root) fail("not inside a git repository");
+  return Home.forRepo(root);
 }
 
 /** The calling agent's session: Claude Code exports it to commands; otherwise fall back to the latest hook. */
-function sessionOf(s: Store): string | null {
-  return process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || s.state().lastHookSession || null;
+function sessionOf(h: Home): string | null {
+  return process.env.CLAUDE_CODE_SESSION_ID || process.env.CODEX_SESSION_ID || process.env.CLAUDE_SESSION_ID || h.state().lastHookSession || null;
 }
 
-function newId() {
-  return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14) + "-" + randomBytes(3).toString("hex");
+/** `--for` specs must name a file; `file:Symbol` narrows to a symbol. */
+function forSpecs(flags: Flags): string[] {
+  const specs = (flags.for ?? []).map((s) => s.trim()).filter(Boolean);
+  if (!specs.length) fail("--for is required: name each file or file:Symbol this decision shaped (a decision explains only what it names)");
+  for (const s of specs) {
+    if (s.startsWith(":")) fail(`--for ${s}: name a file, e.g. --for src/api.ts:fetchJSON`);
+    if (s.endsWith(":")) fail(`--for ${s}: name the symbol after the colon, or drop the colon to name the whole file`);
+  }
+  return specs;
+}
+
+/**
+ * File a decision or link. While a hooked tool call of this session is open, changes since the last
+ * capture came from that same command; otherwise (a person's terminal) their origin is unknown. When
+ * the command may not write Understand's state (a sandbox), queue it for the next hook. Returns the id
+ * when filed now.
+ */
+function record(h: Home, e: Entry): { id: string; log: string | null } | null {
+  try {
+    const open = !!e.session && !!h.state().pre[e.session];
+    return file(h, e, open ? "own" : "unknown");
+  } catch (err) {
+    if (!isWriteDenied(err)) fail((err as Error).message);
+    enqueue(h.root, e);
+    return null;
+  }
 }
 
 async function main() {
   const { cmd, args, flags } = parse(process.argv.slice(2));
   switch (cmd) {
-    case "init": {
-      const s = store();
-      s.assertSafe();
-      if (s.exists() && !flags.force) {
-        const c = s.config();
-        console.log(`Already recording since ${c.createdAt} (baseline ${c.base.slice(0, 8)}). Use --force to start over.`);
-        return;
-      }
-      // Validate everything before touching an existing recording.
-      const baseRef = one(flags, "base");
-      let baseTree: string | null = null;
-      if (baseRef) {
-        try { baseTree = treeOf(s.root, baseRef); } catch { fail(`--base ${baseRef}: not a commit or tree`); }
-      }
-      s.withLock(() => {
-        mkdirSync(s.dir, { recursive: true });
-        excludeLogDir(s.root);
-        const fresh = !existsSync(s.path("config.json"));
-        if (fresh) rmSync(s.path("index"), { force: true }); // seed from the real index
-        // Everything that can fail happens before the old recording is touched.
-        const tree = snapshot(s);
-        const id = newId();
-        const baseRefName = `refs/understand/${id}`;
-        const base = pinTree(s.root, baseTree ?? tree, baseRefName);
-        if (!fresh) archive(s);
-        s.writeState({ lastTree: tree, sessions: {} });
-        s.writeConfig({ version: 2, id, base, baseRef: baseRefName, initTree: tree, branch: currentBranch(s.root), createdAt: new Date().toISOString() });
-        console.log(
-          `Recording in ${s.root}. Baseline: ${baseRef ?? "current worktree"} (${base.slice(0, 8)}). Log: .understand/ (git-excluded)` +
-            (baseRef ? "\nChanges already between the baseline and now will show as \"before recording\": their reasons weren't captured." : ""),
-        );
-      });
-      return;
-    }
-
     case "decide": {
-      const s = ready();
+      const h = home();
       const title = one(flags, "title")?.trim();
       if (!title) fail("--title is required");
       const mechanical = !!flags.mechanical;
@@ -135,101 +145,118 @@ async function main() {
       if (!why && !mechanical) fail("--why is required: paraphrase the reason (use --mechanical for edits with no design choice)");
       const by = (one(flags, "by") ?? "agent") as Decider;
       if (by !== "agent" && by !== "human") fail("--by must be agent or human");
-      const supersedes = one(flags, "supersedes");
-      if (supersedes && !s.decisions().some((d) => d.id === supersedes)) fail(`--supersedes ${supersedes}: no such decision`);
-      const d = s.withLock(() => {
-        const session = sessionOf(s);
-        // Changes since the last capture happened inside the agent's own command (or, without hooks,
-        // since its last decision): they are the agent's.
-        capture(s, { session, tool: s.session(s.state(), session).hooked ? "Bash" : "checkpoint", command: "(changes made in the same command as `understand decide`)" });
-        const adopts = s.unlinkedEdits(session).map((e) => e.id);
-        return s.addDecision({
-          ts: new Date().toISOString(), session, turn: s.session(s.state(), session).turn, title, why, by,
-          alternatives: flags.alt ?? [],
-          ...(flags.for ? { for: flags.for, claimable: s.turnEdits(session).map((e) => e.id) } : {}),
-          ...(supersedes ? { supersedes } : {}),
-          ...(mechanical ? { mechanical } : {}),
-          adopts,
-        });
-      });
-      const files = [...new Set(s.edits().filter((e) => d.adopts.includes(e.id)).flatMap((e) => e.files))];
-      console.log(`${d.id} recorded${d.adopts.length ? `; explains ${d.adopts.length} edit${d.adopts.length > 1 ? "s" : ""} (${files.join(", ")})` : "; no unlinked edits to explain yet"}.`);
+      const input = {
+        title, why, by, alternatives: flags.alt ?? [], risks: flags.risk ?? [], for: forSpecs(flags),
+        ...(one(flags, "supersedes") ? { supersedes: one(flags, "supersedes") } : {}),
+        ...(mechanical ? { mechanical } : {}),
+      };
+      const done = record(h, { kind: "decide", session: sessionOf(h), ts: new Date().toISOString(), input });
+      console.log(!done ? `Recorded for ${input.for.join(", ")}; it will be filed into the log when this command finishes.`
+        : `${done.id} recorded for ${input.for.join(", ")}.${done.log ? ` Shared log: ${done.log} (committed with your changes).` : ""}`);
       return;
     }
 
     case "link": {
-      const s = ready();
+      const h = home();
       const id = args[0];
-      if (!id || !s.decisions().some((d) => d.id === id)) fail(`usage: understand link <Dn> [--for <file>[:<Symbol>]]... (${id ?? "no id"} is not a recorded decision)`);
-      const adopts = s.withLock(() => {
-        const session = sessionOf(s);
-        capture(s, { session, tool: s.session(s.state(), session).hooked ? "Bash" : "checkpoint", command: "(changes made in the same command as `understand link`)" });
-        const adopts = s.unlinkedEdits(session).map((e) => e.id);
-        s.addLink({ decision: id, ts: new Date().toISOString(), session, turn: s.session(s.state(), session).turn, adopts, ...(flags.for ? { for: flags.for, claimable: s.turnEdits(session).map((e) => e.id) } : {}) });
-        return adopts;
-      });
-      console.log(`${id} now also explains ${adopts.length} edit${adopts.length === 1 ? "" : "s"}${flags.for ? ` and names ${flags.for.join(", ")}` : ""}.`);
-      return;
-    }
-
-    case "status": {
-      const s = ready();
-      const c = s.config();
-      const pending = s.unlinkedEdits(sessionOf(s));
-      console.log(`Recording since ${c.createdAt} (started on ${c.branch}), baseline ${c.base.slice(0, 8)}`);
-      console.log(`${s.decisions().length} decisions, ${s.edits().length} captured changes`);
-      if (pending.length) console.log(`${pending.length} edits without a decision: ${[...new Set(pending.flatMap((e) => e.files))].join(", ")}`);
+      if (!id) fail("usage: understand link <Dn> --for <file>[:<Symbol>]...");
+      const specs = forSpecs(flags);
+      record(h, { kind: "link", session: sessionOf(h), ts: new Date().toISOString(), decision: id, for: specs });
+      console.log(`${id} now also explains ${specs.join(", ")}.`);
       return;
     }
 
     case "decisions": {
-      const s = ready();
-      for (const d of s.decisions()) {
+      const src = source(home());
+      const list = src instanceof Home ? readLogs(src.root) : src.decisions();
+      if (src instanceof Home) console.log(list.length ? "(from the decision log checked into .decisions/)" : "No decisions recorded here, locally or in .decisions/.");
+      for (const d of list) {
         console.log(`${d.id} [${d.by}${d.mechanical ? ", mechanical" : ""}]${d.supersedes ? ` (revises ${d.supersedes})` : ""} ${d.title}`);
         if (d.why) console.log(`    why: ${d.why}`);
-        if (d.for?.length) console.log(`    for: ${d.for.join(", ")}`);
+        console.log(`    for: ${d.for.join(", ")}`);
         for (const a of d.alternatives) console.log(`    rejected: ${a}`);
+        for (const r of d.risks ?? []) console.log(`    risk: ${r}`);
       }
+      return;
+    }
+
+    case "status": {
+      const h = home();
+      const session = sessionOf(h);
+      console.log(h.isOff() ? "Recording is off here (`understand on` resumes it)." : `Recording is on (${h.scope(session)}).`);
+      const rec = h.active(session);
+      if (!rec) return console.log("Nothing recorded yet; the first edit starts a recording.");
+      console.log(`Recording ${rec.id} since ${rec.config().createdAt}: ${rec.decisions().length} decisions, ${rec.edits().length} captured changes.`);
+      const turn = new Set(rec.turnEdits(session).map((e) => e.id));
+      const unnamed = (await extract(rec)).symbols.filter((s) => s.gaps.unlinked.some((id) => turn.has(id)));
+      if (unnamed.length) console.log(`Changed this turn, not named by any decision: ${unnamed.map((s) => `${s.file}:${s.name}`).join(", ")}`);
+      return;
+    }
+
+    case "where": {
+      const h = home();
+      console.log(h.active(sessionOf(h))?.dir ?? h.dir);
+      return;
+    }
+
+    case "reset": {
+      const h = home();
+      console.log(h.reset(sessionOf(h)) ? "Ended this recording; the next edit starts a new one." : "Nothing was being recorded here.");
+      return;
+    }
+
+    case "off":
+    case "on": {
+      const file = flags.everywhere ? join(understandHome(), "off") : home().path("off");
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      if (cmd === "off") writeFileSync(file, new Date().toISOString() + "\n");
+      else rmSync(file, { force: true });
+      if (cmd === "on" && !flags.everywhere && home().isOff()) console.log("Recording is still off here: `understand off --everywhere` (or UNDERSTAND_DISABLE) applies to every repo. Run `understand on --everywhere`.");
+      else console.log(`Recording is ${cmd}${flags.everywhere ? " everywhere" : " in this repo"}.`);
       return;
     }
 
     case "extract": {
-      const s = ready();
-      const x = await extract(s);
-      writeFileSync(s.path("extract.json"), JSON.stringify(x, null, 2));
+      const src = source(home());
+      const range = rangeOf(flags);
+      const x = await extract(src, range);
+      mkdirSync(dirOf(src), { recursive: true });
+      writeFileSync(join(dirOf(src), "extract.json"), JSON.stringify(x, null, 2));
       printExtract(x);
-      console.log(`\nFull detail (with code and per-line provenance): .understand/extract.json`);
+      console.log(`\nFull detail (code and per-line provenance): ${join(dirOf(src), "extract.json")}`);
+      console.log(`Write the explanation for this range to: ${explanationPath(src, range)}`);
       return;
     }
 
     case "check": {
-      const s = ready();
-      const n = readNarration(s.path("narration.json"));
-      if (!n) fail("no .understand/narration.json yet");
-      const x = await extract(s);
+      const src = source(home());
+      const range = rangeOf(flags);
+      const n = readExplanation(explanationPath(src, range));
+      if (!n) fail(`no explanation for this range yet (${explanationPath(src, range)})`);
+      const x = await extract(src, range);
       const r = check(x, n);
       for (const e of r.errors) console.log(`error: ${e}`);
-      if (r.missing.length) console.log(`not narrated or not in a chapter (${r.missing.length}):\n  ${r.missing.join("\n  ")}`);
+      if (r.missing.length) console.log(`not explained or not in a chapter (${r.missing.length}):\n  ${r.missing.join("\n  ")}`);
       if (r.errors.length || r.missing.length) process.exit(1);
-      console.log(`OK: ${x.symbols.length} symbols narrated across ${n.chapters.length} chapters.`);
+      console.log(`OK: ${x.symbols.length} symbols explained across ${n.chapters?.length ?? 0} chapters.`);
       return;
     }
 
     case "render": {
-      const s = ready();
-      const x = await extract(s);
-      const n = readNarration(s.path("narration.json"));
+      const src = source(home());
+      const range = rangeOf(flags);
+      const x = await extract(src, range);
+      const n = readExplanation(explanationPath(src, range));
       if (n) {
         const r = check(x, n);
-        if (r.errors.length) fail(`narration is invalid (${r.errors.length} errors); fix them first:\n  ${r.errors.join("\n  ")}`);
-        if (r.missing.length) process.stderr.write(`warning: ${r.missing.length} symbols aren't narrated; they'll be listed under "Not placed in the story".\n`);
+        if (r.errors.length) fail(`explanation is invalid (${r.errors.length} errors); fix them first:\n  ${r.errors.join("\n  ")}`);
+        if (r.missing.length) process.stderr.write(`warning: ${r.missing.length} symbols aren't explained; they'll be listed separately.\n`);
       }
-      const html = renderHtml(x, n);
       const outFlag = one(flags, "out");
-      const out = outFlag ? resolve(outFlag) : s.path("reports", `understand-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.html`);
+      const out = outFlag ? resolve(outFlag) : join(dirOf(src), "reports", `understand-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.html`);
       mkdirSync(dirname(out), { recursive: true });
-      writeFileSync(out, html);
-      if (!outFlag) copyFileSync(out, s.path("reports", "latest.html"));
+      writeFileSync(out, renderHtml(x, n));
+      if (!outFlag) copyFileSync(out, join(dirOf(src), "reports", "latest.html"));
       console.log(out);
       if (flags.open) {
         try {
@@ -240,7 +267,7 @@ async function main() {
     }
 
     case "hook":
-      runHook(args[0] ?? "");
+      await runHook(args[0] ?? "");
       return;
 
     case "help":
@@ -254,21 +281,10 @@ async function main() {
   }
 }
 
-/** Move the current recording aside; its baseline ref stays so the archive remains readable. */
-function archive(s: Store) {
-  let id = "unknown";
-  try { id = s.config().id ?? id; } catch {}
-  const dest = s.path("archive", `${id}-${randomBytes(2).toString("hex")}`);
-  mkdirSync(dest, { recursive: true });
-  for (const f of ["decisions.jsonl", "edits.jsonl", "links.jsonl", "ignored.jsonl", "state.json", "narration.json", "config.json"]) {
-    if (existsSync(s.path(f))) renameSync(s.path(f), join(dest, f));
-  }
-}
-
 function printExtract(x: Extract) {
   const byFile = new Map<string, typeof x.symbols>();
   for (const s of x.symbols) byFile.set(s.file, [...(byFile.get(s.file) ?? []), s]);
-  console.log(`${x.symbols.length} changed symbols in ${byFile.size} files; ${x.decisions.length} decisions.`);
+  console.log(`${x.symbols.length} changed symbols in ${byFile.size} files (${x.baseLabel} → ${x.headLabel}); ${x.decisions.length} decisions.`);
   for (const [file, syms] of byFile) {
     const f = x.files[file];
     console.log(`\n${file} (${f.status}${f.note ? `, ${f.note}` : ""})`);
@@ -286,4 +302,11 @@ function printExtract(x: Extract) {
   if (x.ignoredWrites.length) console.log(`\nWritten by the agent but ignored by git (not in the diff): ${x.ignoredWrites.join(", ")}`);
 }
 
-main().catch((e) => fail((e as Error).message ?? String(e)));
+main().catch((e) => {
+  if (isWriteDenied(e)) {
+    fail(`this command can't write Understand's state (${understandHome()}), probably because of a sandbox. ` +
+      "Run it again with permission to write outside the workspace (in Codex, request escalated permissions), " +
+      "or add that folder to Codex's `sandbox_workspace_write.writable_roots`.");
+  }
+  fail((e as Error).message ?? String(e));
+});

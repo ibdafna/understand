@@ -1,55 +1,50 @@
-import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
+import { appendJsonl, nextNumber, readJson, readJsonl, writeJson } from "./fsutil.js";
+import type { Home } from "./home.js";
 
-/** Written by `understand init`. `base` is a pinned commit; `initTree` is the worktree when recording began. */
+/** One recording: a feature branch across sessions, or a single session on trunk. */
 export interface Config {
-  version: 2;
-  id: string;
-  base: string;
-  baseRef: string;
-  initTree: string;
-  branch: string;
+  scope: string;
+  branch: string | null;
+  session: string | null;
+  /** The worktree (as a tree in the private store) when recording started: the "before". */
+  baseTree: string;
   createdAt: string;
+  /** Name of this recording's shared log under `.decisions/`. */
+  logFile: string;
 }
 
 export type Decider = "human" | "agent";
 
-/** A choice recorded while working. Append-only; `supersedes` is how a decision gets revised. */
+/** A decision-log entry: a choice recorded while working. Append-only; `supersedes` revises one. */
 export interface Decision {
   id: string;
   ts: string;
   session: string | null;
-  turn: number;
   title: string;
   why: string;
   by: Decider;
   alternatives: string[];
+  /** Risks and assumptions known when the decision was made. */
+  risks?: string[];
   supersedes?: string;
   mechanical?: boolean;
-  /** Edits it explains that had no decision when it was recorded. */
-  adopts: string[];
-  /** What it shaped: "path", "path:Symbol", or "Symbol". */
-  for?: string[];
-  /** Edits the claims may bind to: this turn's edits that existed when the decision was recorded. */
-  claimable?: string[];
+  /** What it shaped: "path" or "path:Symbol". A decision explains only what it names. */
+  for: string[];
+  /** Edits it can explain: this turn's edits that existed when it was recorded. */
+  claimable: string[];
 }
 
-/** `understand link`: attaches unlinked edits (and optional claims) to an existing decision. */
+/** `understand link`: a decision recorded earlier also explains what it names among this turn's edits. */
 export interface Link {
   decision: string;
-  ts: string;
-  session: string | null;
-  turn: number;
-  adopts: string[];
-  for?: string[];
-  claimable?: string[];
+  for: string[];
+  claimable: string[];
 }
 
 /**
  * One captured change: the worktree went from tree `from` to tree `to`.
- * `unverified` changes were found by a checkpoint in a hooked session, so no hooked
- * tool made them (a person's editor, another program). They never count as the agent's.
+ * `unverified` changes weren't made by an observed agent tool (a person's editor, another program).
  */
 export interface Edit {
   id: string;
@@ -62,20 +57,14 @@ export interface Edit {
   files: string[];
   command?: string;
   unverified?: boolean;
+  /** Where in the session transcript this happened (stays local; used to explain edits later). */
+  transcript?: string;
+  toolUseId?: string;
 }
 
-export interface SessionState {
-  turn: number;
-  /** Hooks are running for this session, so the shell and edit tools are observed directly. */
-  hooked: boolean;
-}
-
-export interface State {
+export interface RecState {
   /** Worktree tree hash as of the last capture; anything after it hasn't been attributed yet. */
   lastTree: string;
-  sessions: Record<string, SessionState>;
-  /** Session of the most recent hook, for CLI calls that can't see their own session id. */
-  lastHookSession?: string;
 }
 
 export interface Claim {
@@ -86,112 +75,30 @@ export interface Claim {
 }
 
 export class Store {
-  private depth = 0;
-
-  constructor(readonly root: string) {}
-
-  get dir() {
-    return join(this.root, ".understand");
+  readonly dir: string;
+  constructor(readonly home: Home, readonly id: string) {
+    this.dir = home.path("recordings", id);
   }
+
   path(...parts: string[]) {
     return join(this.dir, ...parts);
   }
 
-  /** .understand must be a real directory inside the repo; anything else could redirect writes. */
-  assertSafe() {
-    if (!existsSync(this.dir)) return;
-    if (lstatSync(this.dir).isSymbolicLink()) throw new Error(".understand is a symlink; refusing to record through it");
-    const rel = relative(realpathSync(this.root), realpathSync(this.dir));
-    if (rel !== ".understand") throw new Error(".understand resolves outside the repository");
-  }
-
-  exists() {
-    this.assertSafe();
-    return existsSync(this.path("config.json"));
-  }
-
-  /**
-   * Serialize every read-modify-write across hooks and CLI calls (reentrant within a process).
-   * The lock records its owner; it is only reclaimed when that process is gone, never by age.
-   */
-  withLock<T>(fn: () => T): T {
-    if (this.depth > 0) {
-      this.depth++;
-      try { return fn(); } finally { this.depth--; }
-    }
-    this.assertSafe();
-    mkdirSync(this.dir, { recursive: true });
-    const lock = this.path("lock");
-    const owner = join(lock, "owner");
-    const token = `${process.pid} ${randomBytes(8).toString("hex")}`;
-    const start = Date.now();
-    for (;;) {
-      try {
-        mkdirSync(lock);
-        writeFileSync(owner, token);
-        break;
-      } catch (e: any) {
-        if (e.code !== "EEXIST") throw e;
-        if (ownerGone(owner)) {
-          // Claim the stale lock by renaming it away atomically, so two reclaimers can't both win.
-          const stale = `${lock}.stale.${process.pid}.${Date.now()}`;
-          try {
-            renameSync(lock, stale);
-            if (ownerGone(join(stale, "owner"))) rmSync(stale, { recursive: true, force: true });
-            else renameSync(stale, lock); // raced with a fresh owner: give it back
-          } catch {}
-          continue;
-        }
-        if (Date.now() - start > 60_000) throw new Error("timed out waiting for .understand/lock");
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
-      }
-    }
-    this.depth = 1;
-    try {
-      return fn();
-    } finally {
-      this.depth = 0;
-      try {
-        if (readFileSync(owner, "utf8") === token) rmSync(lock, { recursive: true, force: true });
-      } catch {}
-    }
-  }
-
   config(): Config {
-    const c = JSON.parse(readFileSync(this.path("config.json"), "utf8"));
-    if (c.version !== 2) throw new Error("this recording was made by an older understand; run `understand init --force` to start a new one");
-    return c;
+    return readJson<Config>(this.path("config.json"), null as unknown as Config);
   }
   writeConfig(c: Config) {
-    writeAtomic(this.path("config.json"), JSON.stringify(c, null, 2) + "\n");
+    writeJson(this.path("config.json"), c);
   }
-
-  state(): State {
-    let raw: string;
-    try {
-      raw = readFileSync(this.path("state.json"), "utf8");
-    } catch (e: any) {
-      if (e.code === "ENOENT") throw new Error("recording state is missing; run `understand init --force`");
-      throw e;
-    }
-    return JSON.parse(raw); // malformed state is an error, never silently "fresh"
+  state(): RecState {
+    return readJson<RecState>(this.path("state.json"), null as unknown as RecState);
   }
-  writeState(s: State) {
-    writeAtomic(this.path("state.json"), JSON.stringify(s, null, 2) + "\n");
-  }
-  updateState(fn: (s: State) => void) {
-    this.withLock(() => {
-      const s = this.state();
-      fn(s);
-      this.writeState(s);
-    });
-  }
-  session(s: State, id: string | null): SessionState {
-    return (id && s.sessions[id]) || { turn: 0, hooked: false };
+  writeState(s: RecState) {
+    writeJson(this.path("state.json"), s);
   }
 
   decisions(): Decision[] {
-    return readJsonl<Decision>(this.path("decisions.jsonl")).filter((d) => /^D\d+$/.test(d.id));
+    return readJsonl<Decision>(this.path("decision_log.jsonl")).filter((d) => /^D\d+$/.test(d.id));
   }
   edits(): Edit[] {
     return readJsonl<Edit>(this.path("edits.jsonl")).filter((e) => /^E\d+$/.test(e.id));
@@ -199,38 +106,29 @@ export class Store {
   linkRecords(): Link[] {
     return readJsonl<Link>(this.path("links.jsonl")).filter((l) => /^D\d+$/.test(l.decision));
   }
-  ignoredWrites(): { file: string; ts: string }[] {
+  ignoredWrites(): { file: string }[] {
     return readJsonl(this.path("ignored.jsonl"));
   }
 
   addDecision(d: Omit<Decision, "id">): Decision {
-    return this.withLock(() => {
+    return this.home.withLock(() => {
       const rec = { id: `D${nextNumber(this.decisions().map((x) => x.id))}`, ...d };
-      append(this.path("decisions.jsonl"), rec);
+      appendJsonl(this.path("decision_log.jsonl"), rec);
       return rec;
     });
   }
   addEdit(e: Omit<Edit, "id">): Edit {
-    return this.withLock(() => {
+    return this.home.withLock(() => {
       const rec = { id: `E${nextNumber(this.edits().map((x) => x.id))}`, ...e };
-      append(this.path("edits.jsonl"), rec);
+      appendJsonl(this.path("edits.jsonl"), rec);
       return rec;
     });
   }
   addLink(l: Link) {
-    this.withLock(() => append(this.path("links.jsonl"), l));
+    this.home.withLock(() => appendJsonl(this.path("links.jsonl"), l));
   }
   addIgnoredWrite(file: string) {
-    this.withLock(() => append(this.path("ignored.jsonl"), { file, ts: new Date().toISOString() }));
-  }
-
-  /** Edit id → decision id, from adoption by `decide` or `link`. First claim wins. */
-  links(): Map<string, string> {
-    const m = new Map<string, string>();
-    const all = [...this.decisions().map((d) => ({ decision: d.id, adopts: d.adopts, ts: d.ts })), ...this.linkRecords()];
-    all.sort((a, b) => a.ts.localeCompare(b.ts));
-    for (const r of all) for (const id of r.adopts) if (!m.has(id)) m.set(id, r.decision);
-    return m;
+    this.home.withLock(() => appendJsonl(this.path("ignored.jsonl"), { file }));
   }
 
   claims(): Claim[] {
@@ -244,66 +142,7 @@ export class Store {
 
   /** Agent edits from this session's current turn, explained or not. */
   turnEdits(session: string | null): Edit[] {
-    const turn = this.session(this.state(), session).turn;
+    const turn = this.home.turn(session);
     return this.edits().filter((e) => !e.unverified && e.session === session && e.turn === turn);
   }
-
-  /**
-   * Agent edits from this session's current turn that no decision explains yet. Earlier turns are
-   * closed: whatever they left unexplained stays unexplained rather than being explained later.
-   */
-  unlinkedEdits(session: string | null): Edit[] {
-    const links = this.links();
-    const turn = this.session(this.state(), session).turn;
-    return this.edits().filter((e) => !e.unverified && !links.has(e.id) && e.session === session && e.turn === turn);
-  }
-}
-
-function ownerGone(owner: string): boolean {
-  let pid: number;
-  try {
-    pid = Number(readFileSync(owner, "utf8").split(" ")[0]);
-  } catch {
-    return false; // being created right now; wait
-  }
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (e: any) {
-    return e.code === "ESRCH";
-  }
-}
-
-const nextNumber = (ids: string[]) => Math.max(0, ...ids.map((id) => Number(id.slice(1)) || 0)) + 1;
-
-/** Append one record, first terminating any partial line a crash left behind. */
-function append(file: string, rec: object) {
-  let prefix = "";
-  try {
-    const cur = readFileSync(file, "utf8");
-    if (cur && !cur.endsWith("\n")) prefix = "\n";
-  } catch {}
-  appendFileSync(file, prefix + JSON.stringify(rec) + "\n");
-}
-
-function writeAtomic(file: string, text: string) {
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, text);
-  renameSync(tmp, file);
-}
-
-/** A crash mid-append can leave a partial last line; skip unparsable lines rather than lose the log. */
-function readJsonl<T>(file: string): T[] {
-  if (!existsSync(file)) return [];
-  const out: T[] = [];
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      out.push(JSON.parse(line));
-    } catch {
-      process.stderr.write(`warning: skipping a corrupt line in ${file}\n`);
-    }
-  }
-  return out;
 }
