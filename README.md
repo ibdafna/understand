@@ -67,3 +67,5 @@ npm run ship      # release: bump the version, build, test, commit, tag, push to
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The built plugin in `dist/` includes third-party software; see [dist/THIRD_PARTY_NOTICES.md](dist/THIRD_PARTY_NOTICES.md).
