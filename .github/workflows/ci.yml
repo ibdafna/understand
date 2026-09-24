@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: git config --global user.email ci@example.com && git config --global user.name ci
+      # Users run the committed dist/, so it must match the source.
+      - run: npm run verify
+      # Plugin managers only update on a version change: a push to main without one reaches nobody.
+      - if: github.event_name == 'push'
+        run: |
+          before=$(git show HEAD~1:.claude-plugin/plugin.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')
+          after=$(node -p 'require("./.claude-plugin/plugin.json").version')
+          test "$before" != "$after" || { echo "Version is still $after: release with npm run ship"; exit 1; }

@@ -5,4 +5,10 @@ while [ -L "$SELF" ]; do
   LINK=$(readlink "$SELF")
   case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
 done
+if ! command -v node >/dev/null 2>&1; then
+  # Hooks run on every tool call: without Node, stay out of the way instead of erroring each time.
+  [ "$1" = "hook" ] && exit 0
+  echo "understand: needs Node.js 20 or newer (https://nodejs.org)" >&2
+  exit 1
+fi
 exec node "$(dirname "$SELF")/../dist/understand.mjs" "$@"

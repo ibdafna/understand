@@ -12,15 +12,31 @@ See [`examples/todo-due-dates.html`](examples/todo-due-dates.html) for a page pr
 
 ## Install
 
+**Claude Code**
+
 ```sh
-claude plugin marketplace add /path/to/understand
-claude plugin install understand@understand-local
-# or, for one session: claude --plugin-dir /path/to/understand
+claude plugin marketplace add ibdafna/understand
+claude plugin install understand@understand
 ```
 
-That's all. `/understand:explain` produces a page any time, for whatever you pick: the branch, staged or uncommitted changes, a commit range, or a PR. `understand off` stops recording in a repo (`--everywhere` for all).
+**Codex**
 
-**Codex:** the same plugin works with the Codex CLI. Codex doesn't run a plugin's hooks until you approve them: after installing, open `/hooks` in Codex and trust Understand's hooks (again after each update).
+```sh
+codex plugin marketplace add ibdafna/understand
+codex plugin add understand@understand
+```
+
+Then, in Codex, open `/hooks` and trust Understand's hooks: Codex runs a plugin's hooks only after you approve them.
+
+That's all. `/understand:explain` (in Codex, `$explain`) produces a page any time, for whatever you pick: the branch, staged or uncommitted changes, a commit range, or a PR. `understand off` stops recording in a repo (`--everywhere` for all).
+
+## Update
+
+**Claude Code:** `claude plugin marketplace update understand && claude plugin update understand@understand`, then start a new session.
+
+**Codex:** `codex plugin marketplace upgrade understand && codex plugin add understand@understand`, then re-trust the hooks in `/hooks` if the release changed them.
+
+## Good to know
 
 **What lands in your repo:** only the decision log, `.decisions/<recording>.tsv`, one row per decision, committed along with the agent's commits so the reasons travel with the code (and anyone can build a page from them). Turn that off with `git config understand.share false`. Everything else (snapshots, provenance, pages) stays in `~/.claude/understand/`.
 
@@ -33,9 +49,10 @@ Requires Node 20+ and git. Each tool call that can change files costs two worktr
 ```sh
 npm install
 npm test          # builds dist/ and runs the tests
+npm run ship      # release: bump the version, build, test, commit, tag, push to main
 ```
 
-`dist/` is committed so the plugin runs without an install step. Rebuild with `npm run build` after changing `src/` or `viewer/`. [`docs/design.md`](docs/design.md) explains how it works and why.
+`dist/` is committed so the plugin runs without an install step; CI fails if it doesn't match the source. Plugin managers only update on a version change, so every push to `main` goes through `npm run ship` (CI fails a push that didn't bump the version). [`docs/design.md`](docs/design.md) explains how it works and why.
 
 | Path | What it is |
 | --- | --- |

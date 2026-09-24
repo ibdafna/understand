@@ -1,14 +1,15 @@
 {
-  "name": "understand-local",
+  "name": "understand",
   "owner": {
-    "name": "Understand"
+    "name": "ibdafna"
   },
   "plugins": [
     {
       "name": "understand",
       "source": "./",
-      "description": "Record decisions while coding; review changes with their rationale."
+      "description": "Record decisions while coding; review changes with their rationale.",
+      "version": "0.1.0"
     }
   ],
-  "description": "Local marketplace for the Understand plugin."
+  "description": "Understand: a decision log for coding agents, and review pages built from it."
 }

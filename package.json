@@ -7,7 +7,9 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run -s build && node --test test/*.test.mjs"
+    "test": "npm run -s build && node --test test/*.test.mjs",
+    "verify": "npm test && git diff --exit-code -- dist",
+    "ship": "node scripts/ship.mjs"
   },
   "dependencies": {
     "@vscode/tree-sitter-wasm": "^0.3.1",

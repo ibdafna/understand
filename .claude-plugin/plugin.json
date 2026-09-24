@@ -1,7 +1,7 @@
 {
   "name": "understand",
   "displayName": "Understand",
-  "description": "Records why a coding agent changed code while it works, then renders a symbol-level review page explaining every change.",
+  "description": "Keeps a decision log while a coding agent works, and explains every changed symbol from it.",
   "version": "0.1.0",
   "keywords": [
     "code-review",
@@ -10,6 +10,8 @@
     "decisions"
   ],
   "author": {
-    "name": "Understand"
-  }
+    "name": "ibdafna"
+  },
+  "homepage": "https://github.com/ibdafna/understand",
+  "repository": "https://github.com/ibdafna/understand"
 }
