@@ -63,3 +63,7 @@ npm run ship      # release: bump the version, build, test, commit, tag, push to
 | `src/decisionlog.ts` | the shared `.decisions/*.tsv` log |
 | `src/explanation.ts`, `src/render.ts`, `viewer/viewer.html` | the explanation format, its checks, and the page |
 | `skills/record`, `skills/explain` | keeping the log (internal) and writing the page |
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -13,5 +13,6 @@
     "name": "ibdafna"
   },
   "homepage": "https://github.com/ibdafna/understand",
-  "repository": "https://github.com/ibdafna/understand"
+  "repository": "https://github.com/ibdafna/understand",
+  "license": "MIT"
 }
