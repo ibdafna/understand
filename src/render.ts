@@ -4,9 +4,10 @@ import { fileURLToPath } from "node:url";
 import type { Extract } from "./extract/index.js";
 import type { Explanation } from "./explanation.js";
 
+
 const ATTN = new Set(["careful", "skim", "mechanical"]);
 
-/** Shape consumed by viewer/viewer.html. Keep in sync with the viewer's render code. */
+/** Shape consumed by viewer/app.js. Keep in sync with the viewer's render code. */
 export function viewerData(x: Extract, n: Explanation | null) {
   const sessionNo = new Map(x.sessions.map((s, i) => [s, i + 1]));
   const domId = new Map(x.symbols.map((s, i) => [s.id, `s${i}`]));
@@ -28,7 +29,7 @@ export function viewerData(x: Extract, n: Explanation | null) {
     const attn = note?.attention && ATTN.has(note.attention) ? note.attention : mechanicalOnly ? "mechanical" : "skim";
     // Risks the decisions recorded at the time, then any the explanation found.
     const risks = [
-      ...decs.flatMap((d) => (d.risks ?? []).map((text) => ({ text, from: d.id }))),
+      ...[...decs, ...later.map((d) => decById.get(d)!)].flatMap((d) => (d.risks ?? []).map((text) => ({ text, from: d.id }))),
       ...(note?.risk ? [{ text: note.risk, from: null }] : []),
     ];
     // Review marks are tied to exactly what the reviewer saw: diff, provenance, and explanation.
@@ -36,6 +37,7 @@ export function viewerData(x: Extract, n: Explanation | null) {
     const fp = createHash("sha1").update(JSON.stringify([s.rows, s.gaps, later, shown, note ?? null])).digest("hex").slice(0, 10);
     return {
       id: domId.get(s.id)!,
+      ref: s.id,
       key: `${s.id}@${fp}`,
       file: s.file,
       kind: s.kind,
@@ -54,6 +56,7 @@ export function viewerData(x: Extract, n: Explanation | null) {
       gaps: { outside: s.gaps.outside, before: s.gaps.before, unlinked: s.gaps.unlinked.length },
       explained: s.explained,
       attn,
+      attnWhy: note?.attentionReason ?? null,
       rel: (note?.related ?? []).map((r) => domId.get(r)).filter(Boolean),
     };
   });

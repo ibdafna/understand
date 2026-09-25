@@ -200,21 +200,26 @@ test("the explanation: every symbol needs a summary; later links never clear a g
     const expl = {
       title: "T", intent: "I",
       symbols: {
-        "a.ts#var:a": { summary: "Bumped.", attention: "careful", risk: "Noticed later" },
-        "b.ts#var:b": { summary: "Also bumped.", attention: "mechanical", decisions: ["D1"] },
+        "a.ts#var:a": { summary: "Bumped.", attention: "careful", attentionReason: "changes a default", risk: "Noticed later" },
+        "b.ts#var:b": { summary: "Also bumped.", attention: "mechanical", attentionReason: "a value bump", decisions: ["D1"] },
       },
     };
     writeFileSync(join(dir, "explanations", "recording.json"), JSON.stringify({ ...expl, symbols: { "a.ts#var:a": expl.symbols["a.ts#var:a"] } }));
     assert.match(t.uFail("check").stdout, /not explained or not in a chapter \(1\)/);
     writeFileSync(join(dir, "explanations", "recording.json"), JSON.stringify(expl));
     assert.match(t.u("check"), /^OK/);
+    const { attentionReason, ...noReason } = expl.symbols["a.ts#var:a"];
+    writeFileSync(join(dir, "explanations", "recording.json"), JSON.stringify({ ...expl, symbols: { ...expl.symbols, "a.ts#var:a": noReason } }));
+    assert.match(t.uFail("check").stdout, /a\.ts#var:a: say why it is careful/);
+    writeFileSync(join(dir, "explanations", "recording.json"), JSON.stringify(expl));
     const html = readFileSync(t.u("render").trim(), "utf8");
-    const data = JSON.parse(html.match(/const DATA = (.*?);\n/)[1]);
+    const data = JSON.parse(html.match(/const DATA = (.*?);<\/script>/)[1]);
     const b = data.symbols.find((s) => s.name === "b");
     assert.equal(b.explained, false);
     assert.deepEqual(b.later, ["D1"]);
     const a = data.symbols.find((s) => s.name === "a");
     assert.deepEqual(a.risks.map((r) => r.from), ["D1", null]);
+    assert.equal(a.attnWhy, attentionReason);
     expl.symbols["a.ts#var:a"].attention = 'careful"><img src=x onerror=alert(1)>';
     writeFileSync(join(dir, "explanations", "recording.json"), JSON.stringify(expl));
     const bad = t.uFail("render");

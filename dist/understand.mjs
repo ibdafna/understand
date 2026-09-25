@@ -449,6 +449,7 @@ function check(x, n) {
       continue;
     }
     if (!ATTN.has(note.attention)) errors.push(`${id}: attention must be careful, skim or mechanical`);
+    else if (note.attention !== "skim" && !note.attentionReason?.trim()) errors.push(`${id}: say why it is ${note.attention} (attentionReason)`);
     for (const d of note.decisions ?? []) if (!decs.has(d)) errors.push(`${id}: unknown decision ${d}`);
     for (const r of note.related ?? []) if (!ids.has(r)) errors.push(`${id}: related symbol ${r} does not exist`);
   }
@@ -1981,13 +1982,14 @@ function viewerData(x, n) {
     const mechanicalOnly = decs.length > 0 && decs.every((d) => d.mechanical);
     const attn = note?.attention && ATTN2.has(note.attention) ? note.attention : mechanicalOnly ? "mechanical" : "skim";
     const risks = [
-      ...decs.flatMap((d) => (d.risks ?? []).map((text) => ({ text, from: d.id }))),
+      ...[...decs, ...later.map((d) => decById.get(d))].flatMap((d) => (d.risks ?? []).map((text) => ({ text, from: d.id }))),
       ...note?.risk ? [{ text: note.risk, from: null }] : []
     ];
     const shown = [...s.decisions, ...later].map((d) => decById.get(d)).map((d) => d && [d.id, d.title, d.why, d.alternatives, d.risks]);
     const fp = createHash2("sha1").update(JSON.stringify([s.rows, s.gaps, later, shown, note ?? null])).digest("hex").slice(0, 10);
     return {
       id: domId.get(s.id),
+      ref: s.id,
       key: `${s.id}@${fp}`,
       file: s.file,
       kind: s.kind,
@@ -2006,6 +2008,7 @@ function viewerData(x, n) {
       gaps: { outside: s.gaps.outside, before: s.gaps.before, unlinked: s.gaps.unlinked.length },
       explained: s.explained,
       attn,
+      attnWhy: note?.attentionReason ?? null,
       rel: (note?.related ?? []).map((r) => domId.get(r)).filter(Boolean)
     };
   });

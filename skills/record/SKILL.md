@@ -27,6 +27,8 @@ What counts as a decision:
 - a failed test, error, or discovery that changed course (`--supersedes D<n>` when it revises one)
 - mechanical batches (renames, formatting, moves, regenerated files): `understand decide --mechanical --title "…" --for …`
 
+The review page shows these fields beside the code as the change's explanation, so fill them as you decide: `--why` says why the code exists and why this way; `--alt` is required whenever there was a real alternative (each with why not); `--risk` whenever you assumed something or something could break. What isn't captured now can only be reconstructed afterwards.
+
 One decision per distinct choice. `--why` is a paraphrase in your words, never the user's verbatim. Decisions are also written to `.decisions/` in the repo and committed along with your commits (that's how they travel with the code), so keep them free of secrets, credentials, and anything private. `--by human` means the user made the call: they stated it, picked between options, or approved your proposal.
 
 If you recorded a decision before making its edits, name them afterwards: `understand link D<n> --for <file>:<Symbol>`.

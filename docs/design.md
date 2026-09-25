@@ -27,8 +27,16 @@ Someone installs the plugin and nothing else. Every agent session keeps a decisi
 - **After `gh pr create`**, PostToolUse asks the agent to run the `explain` skill for the PR. `/understand:explain` works any time; without a PR, it asks what to explain.
 - **Any range**: `--pr <ref>` (merge-base → committed HEAD, exactly the PR's diff), `--branch` (merge-base with trunk → working tree), `--staged`, `--uncommitted`, `--commits <a..b>`. Provenance is replayed through the recording regardless of the range; whatever the recording didn't see is "before recording" or "outside". Each range has its own explanation file, so one never describes another's code.
 - **Without a local recording** (a reviewer's checkout, CI), the page is built from the checked-in `.decisions/` logs: symbols are matched to the decisions that name them, and the page says there's no line-level provenance.
-- It writes the range's explanation (`explanations/<range>.json` in the recording): a title, an intent paragraph, chapters (reading order), and for every changed symbol a summary and attention level, plus why / why-this-way / risk where useful. `understand check` requires a summary for every symbol. Risks recorded with decisions appear alongside, labelled by source.
+- It writes the range's explanation (`explanations/<range>.json` in the recording): a title, an intent paragraph, chapters (reading order), and for every changed symbol a summary and attention level (with a one-line reason for careful and mechanical). `understand check` requires both.
+- Beside each symbol's code the page shows why it is the way it is, from the decisions recorded while it was written: the reason, the rejected options, the risks. The explanation adds why / why-this-way / risk only where no decision says it; the page marks those as written afterwards, and the agent raises them with the user in the session. The work of explaining belongs in the coding session; hindsight only fills gaps.
 - `understand render` produces the page; the agent adds a short review guide to the PR description with `gh pr edit` and gives the user the page's local path.
+
+## Review comments
+
+- On the page, a comment targets a line range in one symbol's diff (with the lines it quotes), a whole symbol, or a decision. Comments are kept in the browser, per branch, and can be edited or deleted.
+- "Copy all as a prompt" gathers them in reading order, each with where it applies and its quoted code, for the user to paste into any agent. There's deliberately no channel back from the page: the agent answers in the session, and its changes and decisions show up on the next render.
+- A line comment stays beside the code only while the lines it quotes are still there; otherwise it's listed with its quote and marked as changed.
+- Diffs are drawn by `@pierre/diffs` (pinned), bundled with Shiki's JavaScript regex engine and only our languages' grammars, and inlined into the page (about 1.4 MB). Provenance flags are painted onto its lines after each render.
 
 ## Harnesses
 
@@ -36,7 +44,7 @@ The plugin runs in Claude Code and in the Codex CLI. Codex loads the same manife
 
 ## Output
 
-A single self-contained HTML file (inline CSS, JS, and data). Publishing it where reviewers can open it comes later.
+A single self-contained HTML file (inline CSS, JS, and data), with the notices of the software bundled into it. It follows the system's light or dark setting; a reader's override (System, Light, Dark in the top bar) is kept in the browser for every page and applied before the first paint. Publishing it where reviewers can open it comes later.
 
 ## Known trade-offs
 

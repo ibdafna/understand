@@ -39,9 +39,10 @@ Each symbol lists its decisions (`[D1,D3]`) and any gaps: `UNEXPLAINED` (an agen
     "<symbol id>": {
       "summary": "One line, mostly why and a little what.",
       "attention": "careful | skim | mechanical",
-      "why": "optional: why this exists at all",
-      "how": "optional: why this approach over the alternatives",
-      "risk": "optional: a risk you notice now (recorded risks already appear from the log)",
+      "attentionReason": "for careful and mechanical: why, in a few words (\"changes the saved file format\")",
+      "why": "optional: why this exists, only if no recorded decision says it",
+      "how": "optional: why this approach, only if no recorded decision says it",
+      "risk": "optional: a risk no recorded decision names",
       "decisions": ["optional: decisions to link beyond what the log records"],
       "related": ["optional: other symbol ids"]
     }
@@ -53,12 +54,12 @@ Each symbol lists its decisions (`[D1,D3]`) and any gaps: `UNEXPLAINED` (an agen
 
 **Summary**, for every symbol, imports included: lead with the reason. "Needed by sleepCtx, which moved here" beats "Adds context import". Mechanical symbols get short summaries; spend depth on `careful` ones.
 
-**Attention** tells the reviewer where to spend time; it never hides code or gaps:
+**Attention** tells the reviewer where to spend time; it never hides code or gaps. For `careful` and `mechanical`, `attentionReason` says why in a few words; the page shows it beside the label:
 - `careful`: changes behavior on a real path; concurrency, security, money, data loss, error handling; anything uncertain
 - `skim`: straightforward code that follows directly from a decision
 - `mechanical`: imports, renames, moves, formatting, generated code
 
-**Risk**: be relentless and specific: unhandled inputs, unverified assumptions, callers you didn't check.
+**The reasons come from the decisions.** Beside each symbol the page shows the reason, the rejected options, and the risks its decisions recorded while the code was written. Don't restate them. Write `why`, `how`, or `risk` only for what no decision captured; the page marks those as written afterwards. When you notice something new now (a risk, a reason nobody recorded), also tell the user in your reply: they should hear it in the session, not only on the page. If there's no good reason to give, leave the field out.
 
 **For symbols with gaps**, describe what changed. If a recorded decision explains it, list it in `decisions`; the page shows it as linked afterwards and still flags the gap. Otherwise write "No recorded reason".
 
@@ -69,4 +70,4 @@ understand check <range>              # until it prints OK
 understand render <range> --open      # prints the page's path
 ```
 
-Give the user the page's path. For a PR, also add a short review guide to its description with `gh pr edit`: the intent, which symbols are marked careful, and how many are unexplained. The page itself is a local file for now, so leave its path out of the PR (reviewers can't open it).
+Give the user the page's path, and tell them they can comment on it (lines, symbols, decisions) and paste the comments back with "Copy all as a prompt". For a PR, also add a short review guide to its description with `gh pr edit`: the intent, which symbols are marked careful, and how many are unexplained. The page itself is a local file for now, so leave its path out of the PR (reviewers can't open it).

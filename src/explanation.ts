@@ -12,6 +12,9 @@ export interface Explanation {
   symbols: Record<string, {
     summary: string;
     attention: Attention;
+    /** Why this deserves that attention; required for careful and mechanical. */
+    attentionReason?: string;
+    /** why/how/risk: only what no recorded decision says (the page marks them as written afterwards). */
     why?: string;
     how?: string;
     risk?: string;
@@ -55,6 +58,7 @@ export function check(x: Extract, n: Explanation): CheckResult {
   for (const [id, note] of Object.entries(n.symbols ?? {})) {
     if (!ids.has(id)) { errors.push(`entry for unknown symbol ${id}`); continue; }
     if (!ATTN.has(note.attention)) errors.push(`${id}: attention must be careful, skim or mechanical`);
+    else if (note.attention !== "skim" && !note.attentionReason?.trim()) errors.push(`${id}: say why it is ${note.attention} (attentionReason)`);
     for (const d of note.decisions ?? []) if (!decs.has(d)) errors.push(`${id}: unknown decision ${d}`);
     for (const r of note.related ?? []) if (!ids.has(r)) errors.push(`${id}: related symbol ${r} does not exist`);
   }

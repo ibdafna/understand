@@ -200,7 +200,7 @@ test("default chapters put a revised symbol under its latest decision", () => {
     t.u("decide", "--title", "First try", "--why", "w", "--for", "a.ts:a");
     t.edit("a.ts", "a = 2", "a = 3");
     t.u("decide", "--title", "Second thoughts", "--why", "w", "--for", "a.ts:a", "--supersedes", "D1");
-    const data = JSON.parse(readFileSync(t.u("render").trim(), "utf8").match(/const DATA = (.*?);\n/)[1]);
+    const data = JSON.parse(readFileSync(t.u("render").trim(), "utf8").match(/const DATA = (.*?);<\/script>/)[1]);
     assert.deepEqual(data.chapters.map((c) => c.title), ["Second thoughts"]);
   } finally {
     t.cleanup();
@@ -336,7 +336,7 @@ test("default chapters follow a decision to the one that superseded it", () => {
     t.edit("a.ts", "a = 1", "a = 2");
     t.u("decide", "--title", "First try", "--why", "w", "--for", "a.ts:a");
     t.u("decide", "--title", "Rethought", "--why", "w", "--for", "a.ts:a", "--supersedes", "D1");
-    const data = JSON.parse(readFileSync(t.u("render").trim(), "utf8").match(/const DATA = (.*?);\n/)[1]);
+    const data = JSON.parse(readFileSync(t.u("render").trim(), "utf8").match(/const DATA = (.*?);<\/script>/)[1]);
     assert.deepEqual(data.chapters.map((c) => c.title), ["Rethought"]);
   } finally {
     t.cleanup();

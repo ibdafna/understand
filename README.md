@@ -6,7 +6,8 @@ Agents write more code than anyone reads. Understand keeps a **decision log** wh
 - **Decision log:** each decision records the choice, the reason, who made it (you or the agent), the rejected alternatives, known risks, and exactly which files and symbols it shaped. A decision explains only what it names.
 - **Explain:** the agent turns the log into a note for every changed symbol, puts them in reading order, marks what deserves a careful look, and calls out risks. The page covers the PR's diff: its merge-base to the committed HEAD.
 - **Honest gaps:** every changed line is traced to the tool call that wrote it. Lines no agent tool wrote (your own edits, other programs), agent edits no decision names, and changes from before recording are flagged, line by line. Nothing written afterwards clears a flag.
-- **Review:** one self-contained HTML file. Read in story or file order, see the rationale beside the code or on hover, focus on a decision to see everything it shaped, and track review progress with `j`/`k`/`x`.
+- **Review:** one self-contained HTML file. Read in story or file order, with the reason beside the code; focus on a decision to see everything it shaped, and track progress with `j`/`k`/`x`.
+- **Comments:** comment on any line range (the **+** beside a line), a symbol, or a decision; edit or delete them as you go. "Copy all as a prompt" gathers them, each with where it applies and the code it quotes, to paste into your agent.
 
 **[ibdafna.github.io/understand](https://ibdafna.github.io/understand)** has live example pages from real sessions in Claude Code and Codex.
 
@@ -61,7 +62,7 @@ npm run ship      # release: bump the version, build, test, commit, tag, push to
 | `src/home.ts`, `src/store.ts` | per-repo state outside the repo; recordings and the decision log |
 | `src/extract/` | tree-sitter symbols (Go, TS/JS, Python), symbol-level diff, per-line provenance |
 | `src/decisionlog.ts` | the shared `.decisions/*.tsv` log |
-| `src/explanation.ts`, `src/render.ts`, `viewer/viewer.html` | the explanation format, its checks, and the page |
+| `src/explanation.ts`, `src/render.ts`, `viewer/` | the explanation format, its checks, and the page (diffs drawn by [@pierre/diffs](https://www.npmjs.com/package/@pierre/diffs), trimmed to our languages) |
 | `skills/record`, `skills/explain` | keeping the log (internal) and writing the page |
 | `site/`, `examples/` | the GitHub Pages site (deployed by CI) and the example pages it shows |
 
