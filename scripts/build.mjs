@@ -1,7 +1,7 @@
 // Bundles the CLI and the viewer into dist/ with everything they need at runtime, so the plugin
 // works without `npm install`.
 import { build } from "esbuild";
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
 const WASM = "node_modules/@vscode/tree-sitter-wasm/wasm/";
@@ -60,17 +60,13 @@ copyFileSync(WASM + "tree-sitter.wasm", "dist/wasm/tree-sitter.wasm");
 for (const l of LANGS) {
   copyFileSync(l.grammar, "dist/wasm/" + basename(l.grammar));
   mkdirSync(`dist/languages/${l.id}`, { recursive: true });
-  for (const f of readdirSync(`languages/${l.id}`)) copyFileSync(`languages/${l.id}/${f}`, `dist/languages/${l.id}/${f}`);
+  for (const f of ["lang.json", "outline.scm"]) if (existsSync(`languages/${l.id}/${f}`)) copyFileSync(`languages/${l.id}/${f}`, `dist/languages/${l.id}/${f}`);
 }
 
 const mit = (holder) => `MIT License\n\nCopyright (c) ${holder}\n\n${readFileSync("LICENSE", "utf8").split("\n").slice(4).join("\n").trim()}\n`;
-const treeSitter = [
-  ["tree-sitter (runtime, dist/wasm/tree-sitter.*)", "https://github.com/tree-sitter/tree-sitter", "2018 Max Brunsfeld"],
-  ["tree-sitter-go", "https://github.com/tree-sitter/tree-sitter-go", "2014 Max Brunsfeld"],
-  ["tree-sitter-javascript", "https://github.com/tree-sitter/tree-sitter-javascript", "2014 Max Brunsfeld"],
-  ["tree-sitter-typescript (typescript, tsx)", "https://github.com/tree-sitter/tree-sitter-typescript", "2017 Max Brunsfeld"],
-  ["tree-sitter-python", "https://github.com/tree-sitter/tree-sitter-python", "2016 Max Brunsfeld"],
-];
+// The runtime, then each grammar once (tsx shares typescript's), from the languages' own data.
+const treeSitter = [["tree-sitter (runtime, dist/wasm/tree-sitter.*)", "https://github.com/tree-sitter/tree-sitter", "2018 Max Brunsfeld"]];
+for (const l of LANGS) if (!treeSitter.some(([, url]) => url === l.license.source)) treeSitter.push([`${basename(l.license.source)} (dist/wasm/${basename(l.grammar)})`, l.license.source, l.license.copyright]);
 writeFileSync("dist/THIRD_PARTY_NOTICES.md", "# Third-party notices\n\nThe built plugin in this folder includes the following software.\n\n" +
   "## Bundled into dist/understand.mjs\n\n" + notices(cli.metafile) +
   "\n## Bundled into dist/viewer.html (and every page rendered from it)\n\n" + viewerNotices + "\n" +

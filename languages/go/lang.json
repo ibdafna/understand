@@ -1,1 +1,10 @@
-{ "extensions": ["go"], "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-go.wasm" }
+{
+  "extensions": [
+    "go"
+  ],
+  "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-go.wasm",
+  "license": {
+    "source": "https://github.com/tree-sitter/tree-sitter-go",
+    "copyright": "2014 Max Brunsfeld"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "extensions": [
+    "rs"
+  ],
+  "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-rust.wasm",
+  "leading": [
+    "attribute_item"
+  ],
+  "license": {
+    "source": "https://github.com/tree-sitter/tree-sitter-rust",
+    "copyright": "2017 Maxim Sokolov"
+  }
+}

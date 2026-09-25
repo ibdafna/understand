@@ -1,1 +1,16 @@
-{ "extensions": ["tsx"], "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-tsx.wasm", "outline": "typescript", "wrappers": ["export_statement", "ambient_declaration", "expression_statement"] }
+{
+  "extensions": [
+    "tsx"
+  ],
+  "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-tsx.wasm",
+  "outline": "typescript",
+  "wrappers": [
+    "export_statement",
+    "ambient_declaration",
+    "expression_statement"
+  ],
+  "license": {
+    "source": "https://github.com/tree-sitter/tree-sitter-typescript",
+    "copyright": "2017 Max Brunsfeld"
+  }
+}

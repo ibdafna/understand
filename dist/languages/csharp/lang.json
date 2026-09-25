@@ -1,0 +1,10 @@
+{
+  "extensions": [
+    "cs"
+  ],
+  "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-c-sharp.wasm",
+  "license": {
+    "source": "https://github.com/tree-sitter/tree-sitter-c-sharp",
+    "copyright": "2014-2023 Max Brunsfeld, Damien Guard, Amaan Qureshi, and contributors"
+  }
+}

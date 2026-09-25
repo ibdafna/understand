@@ -1,0 +1,10 @@
+{
+  "extensions": [
+    "java"
+  ],
+  "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-java.wasm",
+  "license": {
+    "source": "https://github.com/tree-sitter/tree-sitter-java",
+    "copyright": "2017 Ayman Nadeem"
+  }
+}

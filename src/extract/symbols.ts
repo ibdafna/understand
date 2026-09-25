@@ -19,6 +19,8 @@ interface LangDef {
   wrappers?: string[];
   /** Node types that lead a declaration like doc comments do (attributes). */
   leading?: string[];
+  /** Node types that don't count as nesting (`#ifdef` blocks): what's inside is at their level. */
+  transparent?: string[];
 }
 
 const langDir = fileURLToPath(new URL("./languages/", import.meta.url));
@@ -111,7 +113,8 @@ async function load(lang: Lang) {
  * ("text": the item's flattened text), collapse ("single": a group of one is that one), ordinal
  * (a word that makes position within the group part of identity: Go's iota), fold ("next":
  * merges into the next item of the same name: TypeScript overloads), qualify ("no": not named after
- * its container: an import inside a module block).
+ * its container: an import inside a module block), qualify.members ("no": a container whose members
+ * keep their own names).
  */
 interface Item {
   node: TSNode;
@@ -130,6 +133,8 @@ export async function symbolsOf(lang: Lang, src: string): Promise<FileSymbols> {
   const root = tree.rootNode as TSNode;
   const b = new Builder(src, def.leading ?? []);
   const wrappers = new Set(def.wrappers ?? []);
+  const transparent = new Set(def.transparent ?? []);
+  const up = (n: TSNode) => { let p = n.parent; while (p && transparent.has(p.type)) p = p.parent; return p; };
 
   // Candidates, one per declaration: wrappers belong to it, and the first pattern to find it wins.
   const byNode = new Map<number, Item>();
@@ -155,13 +160,13 @@ export async function symbolsOf(lang: Lang, src: string): Promise<FileSymbols> {
   for (const it of items) {
     while (stack.length && !(stack.at(-1)!.node.startIndex <= it.node.startIndex && it.node.endIndex <= stack.at(-1)!.node.endIndex)) stack.pop();
     const parent = stack.at(-1) ?? null;
-    const home = (it.cap.group?.[0] ?? it.node).parent?.id;
+    const home = up(it.cap.group?.[0] ?? it.node)?.id;
     it.ok = parent ? parent.ok && !!parent.props.container && home === (parent.cap.body?.[0] ?? parent.node).id : home === root.id;
     if (it.ok) {
       it.parent = parent;
       (parent ? parent.kids : top).push(it);
       const name = nameOf(it);
-      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : parent && it.props.qualify !== "no" ? `${parent.qn}.${name}` : name;
+      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : qualifier(it) ? `${qualifier(it)}.${name}` : name;
     }
     stack.push(it);
   }
@@ -171,6 +176,9 @@ export async function symbolsOf(lang: Lang, src: string): Promise<FileSymbols> {
 }
 
 const text = (n: TSNode) => flat(unquote(n.text));
+
+/** The container name an item's name starts with, if any. */
+const qualifier = (it: Item) => (it.parent && it.props.qualify !== "no" && it.parent.props["qualify.members"] !== "no" ? it.parent.qn : "");
 
 function nameOf(it: Item): string {
   if (it.props.name === "text") {
@@ -185,7 +193,7 @@ function nameOf(it: Item): string {
 function keyOf(it: Item): string {
   const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
   const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
-  const scope = it.cap.scope ? text(it.cap.scope[0]) : it.props.qualify === "no" ? "" : it.parent?.qn;
+  const scope = it.cap.scope ? text(it.cap.scope[0]) : qualifier(it);
   return (scope ? scope + "." : "") + prefix + own;
 }
 

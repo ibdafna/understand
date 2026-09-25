@@ -1,1 +1,14 @@
-{ "extensions": ["py"], "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-python.wasm", "wrappers": ["decorated_definition"] }
+{
+  "extensions": [
+    "py",
+    "pyi"
+  ],
+  "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-python.wasm",
+  "wrappers": [
+    "decorated_definition"
+  ],
+  "license": {
+    "source": "https://github.com/tree-sitter/tree-sitter-python",
+    "copyright": "2016 Max Brunsfeld"
+  }
+}

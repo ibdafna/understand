@@ -998,6 +998,12 @@ async function symbolsOf(lang, src) {
   const root = tree.rootNode;
   const b = new Builder(src, def.leading ?? []);
   const wrappers = new Set(def.wrappers ?? []);
+  const transparent = new Set(def.transparent ?? []);
+  const up = (n) => {
+    let p = n.parent;
+    while (p && transparent.has(p.type)) p = p.parent;
+    return p;
+  };
   const byNode = /* @__PURE__ */ new Map();
   for (const m of query.matches(root)) {
     const cap = {};
@@ -1017,13 +1023,13 @@ async function symbolsOf(lang, src) {
   for (const it of items) {
     while (stack.length && !(stack.at(-1).node.startIndex <= it.node.startIndex && it.node.endIndex <= stack.at(-1).node.endIndex)) stack.pop();
     const parent = stack.at(-1) ?? null;
-    const home2 = (it.cap.group?.[0] ?? it.node).parent?.id;
+    const home2 = up(it.cap.group?.[0] ?? it.node)?.id;
     it.ok = parent ? parent.ok && !!parent.props.container && home2 === (parent.cap.body?.[0] ?? parent.node).id : home2 === root.id;
     if (it.ok) {
       it.parent = parent;
       (parent ? parent.kids : top).push(it);
       const name = nameOf(it);
-      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : parent && it.props.qualify !== "no" ? `${parent.qn}.${name}` : name;
+      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : qualifier(it) ? `${qualifier(it)}.${name}` : name;
     }
     stack.push(it);
   }
@@ -1032,6 +1038,7 @@ async function symbolsOf(lang, src) {
   return { syms: b.syms, groups: b.groups };
 }
 var text = (n) => flat(unquote(n.text));
+var qualifier = (it) => it.parent && it.props.qualify !== "no" && it.parent.props["qualify.members"] !== "no" ? it.parent.qn : "";
 function nameOf(it) {
   if (it.props.name === "text") {
     const t = flat(it.node.text).replace(/;$/, "");
@@ -1044,7 +1051,7 @@ function nameOf(it) {
 function keyOf(it) {
   const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
   const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
-  const scope = it.cap.scope ? text(it.cap.scope[0]) : it.props.qualify === "no" ? "" : it.parent?.qn;
+  const scope = it.cap.scope ? text(it.cap.scope[0]) : qualifier(it);
   return (scope ? scope + "." : "") + prefix + own;
 }
 function sigOf(it, node = it.node) {

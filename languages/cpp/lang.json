@@ -1,0 +1,25 @@
+{
+  "extensions": [
+    "cpp",
+    "cc",
+    "cxx",
+    "hpp",
+    "hh",
+    "hxx"
+  ],
+  "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-cpp.wasm",
+  "wrappers": [
+    "template_declaration"
+  ],
+  "transparent": [
+    "preproc_ifdef",
+    "preproc_if",
+    "preproc_else",
+    "preproc_elif",
+    "preproc_elifdef"
+  ],
+  "license": {
+    "source": "https://github.com/tree-sitter/tree-sitter-cpp",
+    "copyright": "2014 Max Brunsfeld"
+  }
+}
