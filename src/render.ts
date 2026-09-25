@@ -18,7 +18,7 @@ export function viewerData(x: Extract, n: Explanation | null) {
 
   const symbols = x.symbols.map((s) => {
     const note = n?.symbols?.[s.id];
-    const later = [...new Set([...s.later, ...(note?.decisions ?? [])])].filter((d) => decById.has(d) && !s.decisions.includes(d));
+    const later = s.later.filter((d) => decById.has(d) && !s.decisions.includes(d));
     const unlinked = new Set(s.gaps.unlinked);
     const rows = s.rows.map((r) => {
       const flag = r.t === "+" || r.t === "-" ? (r.p === "outside" ? "o" : r.p === "before" ? "b" : r.p && unlinked.has(r.p) ? "u" : undefined) : undefined;
@@ -57,7 +57,6 @@ export function viewerData(x: Extract, n: Explanation | null) {
       explained: s.explained,
       attn,
       attnWhy: note?.attentionReason ?? null,
-      rel: (note?.related ?? []).map((r) => domId.get(r)).filter(Boolean),
     };
   });
 

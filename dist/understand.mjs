@@ -427,7 +427,6 @@ var ATTN = /* @__PURE__ */ new Set(["careful", "skim", "mechanical"]);
 function check(x, n) {
   const errors = [];
   const ids = new Set(x.symbols.map((s) => s.id));
-  const decs = new Set(x.decisions.map((d) => d.id));
   const placed = /* @__PURE__ */ new Map();
   if (!n.title?.trim()) errors.push("title is empty");
   if (!n.intent?.trim()) errors.push("intent is empty");
@@ -450,8 +449,6 @@ function check(x, n) {
     }
     if (!ATTN.has(note.attention)) errors.push(`${id}: attention must be careful, skim or mechanical`);
     else if (note.attention !== "skim" && !note.attentionReason?.trim()) errors.push(`${id}: say why it is ${note.attention} (attentionReason)`);
-    for (const d of note.decisions ?? []) if (!decs.has(d)) errors.push(`${id}: unknown decision ${d}`);
-    for (const r of note.related ?? []) if (!ids.has(r)) errors.push(`${id}: related symbol ${r} does not exist`);
   }
   const missing = x.symbols.filter((s) => !n.symbols?.[s.id]?.summary?.trim() || n.chapters?.length && !placed.has(s.id)).map((s) => s.id);
   return { errors, missing };
@@ -1972,7 +1969,7 @@ function viewerData(x, n) {
   const chapters = n?.chapters?.length ? explicitChapters(x, n, domId) : decisionChapters(x, domId);
   const symbols = x.symbols.map((s) => {
     const note = n?.symbols?.[s.id];
-    const later = [.../* @__PURE__ */ new Set([...s.later, ...note?.decisions ?? []])].filter((d) => decById.has(d) && !s.decisions.includes(d));
+    const later = s.later.filter((d) => decById.has(d) && !s.decisions.includes(d));
     const unlinked = new Set(s.gaps.unlinked);
     const rows = s.rows.map((r) => {
       const flag = r.t === "+" || r.t === "-" ? r.p === "outside" ? "o" : r.p === "before" ? "b" : r.p && unlinked.has(r.p) ? "u" : void 0 : void 0;
@@ -2008,8 +2005,7 @@ function viewerData(x, n) {
       gaps: { outside: s.gaps.outside, before: s.gaps.before, unlinked: s.gaps.unlinked.length },
       explained: s.explained,
       attn,
-      attnWhy: note?.attentionReason ?? null,
-      rel: (note?.related ?? []).map((r) => domId.get(r)).filter(Boolean)
+      attnWhy: note?.attentionReason ?? null
     };
   });
   return {

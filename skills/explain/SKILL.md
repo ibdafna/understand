@@ -42,9 +42,7 @@ Each symbol lists its decisions (`[D1,D3]`) and any gaps: `UNEXPLAINED` (an agen
       "attentionReason": "for careful and mechanical: why, in a few words (\"changes the saved file format\")",
       "why": "optional: why this exists, only if no recorded decision says it",
       "how": "optional: why this approach, only if no recorded decision says it",
-      "risk": "optional: a risk no recorded decision names",
-      "decisions": ["optional: decisions to link beyond what the log records"],
-      "related": ["optional: other symbol ids"]
+      "risk": "optional: a risk no recorded decision names"
     }
   }
 }
@@ -61,7 +59,7 @@ Each symbol lists its decisions (`[D1,D3]`) and any gaps: `UNEXPLAINED` (an agen
 
 **The reasons come from the decisions.** Beside each symbol the page shows the reason, the rejected options, and the risks its decisions recorded while the code was written. Don't restate them. Write `why`, `how`, or `risk` only for what no decision captured; the page marks those as written afterwards. When you notice something new now (a risk, a reason nobody recorded), also tell the user in your reply: they should hear it in the session, not only on the page. If there's no good reason to give, leave the field out.
 
-**For symbols with gaps**, describe what changed. If a recorded decision explains it, list it in `decisions`; the page shows it as linked afterwards and still flags the gap. Otherwise write "No recorded reason".
+**For symbols with gaps** (unexplained), the summary still describes what changed; leave `why` out. The page shows the gap itself.
 
 ## 4. Check, render, share
 

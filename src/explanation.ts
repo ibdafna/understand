@@ -18,9 +18,6 @@ export interface Explanation {
     why?: string;
     how?: string;
     risk?: string;
-    /** Decisions linked here beyond what the log records (shown as linked afterwards). */
-    decisions?: string[];
-    related?: string[];
   }>;
 }
 
@@ -41,7 +38,6 @@ const ATTN = new Set(["careful", "skim", "mechanical"]);
 export function check(x: Extract, n: Explanation): CheckResult {
   const errors: string[] = [];
   const ids = new Set(x.symbols.map((s) => s.id));
-  const decs = new Set(x.decisions.map((d) => d.id));
   const placed = new Map<string, number>();
 
   if (!n.title?.trim()) errors.push("title is empty");
@@ -59,8 +55,6 @@ export function check(x: Extract, n: Explanation): CheckResult {
     if (!ids.has(id)) { errors.push(`entry for unknown symbol ${id}`); continue; }
     if (!ATTN.has(note.attention)) errors.push(`${id}: attention must be careful, skim or mechanical`);
     else if (note.attention !== "skim" && !note.attentionReason?.trim()) errors.push(`${id}: say why it is ${note.attention} (attentionReason)`);
-    for (const d of note.decisions ?? []) if (!decs.has(d)) errors.push(`${id}: unknown decision ${d}`);
-    for (const r of note.related ?? []) if (!ids.has(r)) errors.push(`${id}: related symbol ${r} does not exist`);
   }
   const missing = x.symbols
     .filter((s) => !n.symbols?.[s.id]?.summary?.trim() || (n.chapters?.length && !placed.has(s.id)))

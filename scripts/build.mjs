@@ -1,7 +1,7 @@
 // Bundles the CLI and the viewer into dist/ with everything they need at runtime, so the plugin
 // works without `npm install`.
 import { build } from "esbuild";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const WASM = "node_modules/@vscode/tree-sitter-wasm/wasm/";
@@ -48,7 +48,9 @@ const viewer = await build({
 // dist/ ships other people's code; their licenses require keeping these notices with it.
 const viewerNotices = notices(viewer.metafile);
 const app = `/*! Understand viewer. Includes third-party software:\n${viewerNotices.replaceAll("*/", "* /")}\n*/\n${viewer.outputFiles[0].text}`;
-const page = readFileSync("viewer/viewer.html", "utf8").replace("/*__UNDERSTAND_APP__*/", () => app.replace(/<\/script/gi, "<\\/script"));
+const shell = readFileSync("viewer/viewer.html", "utf8");
+if (shell.split("/*__UNDERSTAND_APP__*/").length !== 2) throw new Error("viewer/viewer.html must hold the app placeholder exactly once");
+const page = shell.replace("/*__UNDERSTAND_APP__*/", () => app.replace(/<\/script/gi, "<\\/script"));
 writeFileSync("dist/viewer.html", page);
 
 // .cjs: the runtime is UMD and must not be treated as ESM under this package's "type": "module".
@@ -90,4 +92,3 @@ function notices(metafile) {
   }).join("");
 }
 
-if (!existsSync("dist/viewer.html")) process.exit(1);

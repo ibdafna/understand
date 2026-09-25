@@ -94,25 +94,40 @@ function whereText(t) {
 }
 const shortWhere = (t) => (t.kind === "decision" ? t.decision : `${REF[t.symbol] ? shortName(REF[t.symbol]) : symbolLabel(t.symbol)}${t.kind === "lines" ? ` · ${lines(t)}` : ""}`);
 
-/* The rows a line target covers, as a quote; null when those lines aren't in this diff (any more). */
-const rowIndex = (s, side, line) => s.rows.findIndex((r) => (side === "old" ? r.t === "-" && r.o === line : r.t !== "-" && r.t !== "gap" && r.n === line));
-function quoteAt(s, t) {
-  const a = rowIndex(s, t.side, t.from), b = rowIndex(s, t.side, t.to);
-  if (a < 0 || b < 0) return null;
-  return s.rows.slice(Math.min(a, b), Math.max(a, b) + 1).filter((r) => r.t !== "gap").map((r) => r.t + r.s).join("\n");
-}
-/* Line comments show beside the code only while the code they quote is still there. */
-const anchored = (c) => c.target.kind !== "lines" || (REF[c.target.symbol] && quoteAt(REF[c.target.symbol], c.target) === c.target.quote);
-
-/* A selected range (possibly across removed and added lines) becomes new-side lines when it covers any. */
-function linesTarget(s, side, from, endSide, to) {
-  const a = rowIndex(s, side, from), b = rowIndex(s, endSide, to);
-  if (a < 0 || b < 0) return null;
-  const slice = s.rows.slice(Math.min(a, b), Math.max(a, b) + 1).filter((r) => r.t !== "gap");
+const rowText = (r) => r.t + r.s;
+/* The lines a run of diff rows covers (new-side numbers when it has any), and where a comment on it sits. */
+function span(slice) {
   const onNew = slice.some((r) => r.t !== "-");
   const nums = slice.filter((r) => !onNew || r.t !== "-").map((r) => (onNew ? r.n : r.o));
-  const t = { kind: "lines", symbol: s.ref, side: onNew ? "new" : "old", from: Math.min(...nums), to: Math.max(...nums) };
-  return { ...t, quote: quoteAt(s, t) };
+  const end = slice[slice.length - 1];
+  return { side: onNew ? "new" : "old", from: Math.min(...nums), to: Math.max(...nums), at: { side: end.t === "-" ? "deletions" : "additions", line: end.t === "-" ? end.o : end.n } };
+}
+/* Where a comment's code is now. Line comments are found by the code they quote, so edits above them don't
+ * strand them; null once that code is gone. */
+function here(c) {
+  const t = c.target;
+  if (t.kind !== "lines") return t;
+  const s = REF[t.symbol];
+  if (!s || !t.quote) return null;
+  const rows = s.rows.filter((r) => r.t !== "gap"), want = t.quote.split("\n");
+  let best = null;
+  for (let i = 0; i + want.length <= rows.length; i++) {
+    if (!want.every((l, j) => rowText(rows[i + j]) === l)) continue;
+    const found = { ...t, ...span(rows.slice(i, i + want.length)) };
+    if (!best || found.to === t.to) best = found; // the same code twice: prefer the copy where it was
+  }
+  return best;
+}
+const anchored = (c) => !!here(c);
+
+/* A selected range, possibly across removed and added lines, quoted exactly as selected. */
+function linesTarget(s, side, from, endSide, to) {
+  const find = (sd, line) => s.rows.findIndex((r) => (sd === "old" ? r.t === "-" && r.o === line : r.t !== "-" && r.t !== "gap" && r.n === line));
+  const a = find(side, from), b = find(endSide, to);
+  if (a < 0 || b < 0) return null;
+  const slice = s.rows.slice(Math.min(a, b), Math.max(a, b) + 1).filter((r) => r.t !== "gap");
+  const { at, ...where } = span(slice);
+  return { kind: "lines", symbol: s.ref, ...where, quote: slice.map(rowText).join("\n") };
 }
 
 /* Focus a comment's box, caret at the end: at once, so the first keystrokes land in it, not on a shortcut. */
@@ -158,7 +173,8 @@ function deleteComment(key) {
 }
 
 function commentHTML(c) {
-  const where = c.target.kind === "lines" ? esc(lines(c.target)) : c.target.kind === "decision" ? esc(c.target.decision) : "";
+  const t = here(c) ?? c.target;
+  const where = t.kind === "lines" ? esc(lines(t)) : t.kind === "decision" ? esc(t.decision) : "";
   if (editing.has(c.key)) {
     return `<div class="cmt editing"><div class="c-top"><b>You</b><span>${where}</span></div>
       <textarea data-c="${c.key}" rows="3" placeholder="What should the agent change, or explain?" aria-label="Comment">${esc(editing.get(c.key))}</textarea>
@@ -180,9 +196,10 @@ function inPageOrder(list) {
 
 function promptText(list) {
   const body = inPageOrder(list).map((c, i) => {
-    const t = c.target;
+    const t = here(c) ?? c.target;
+    const gone = here(c) ? "" : " (this code has changed since the comment)";
     const quote = t.kind === "lines" && t.quote ? "\n" + t.quote.split("\n").map((l) => `   > ${l}`).join("\n") : "";
-    return `${i + 1}. ${whereText(t)}${quote}\n   ${c.text.replace(/\n/g, "\n   ")}`;
+    return `${i + 1}. ${whereText(t)}${gone}${quote}\n   ${c.text.replace(/\n/g, "\n   ")}`;
   }).join("\n\n");
   return `Review comments on ${DATA.branch} (${DATA.baseLabel} → ${DATA.headLabel}):\n\n${body}\n\nAddress each comment: change the code, or explain why it should stay as it is.`;
 }
@@ -221,14 +238,13 @@ const PROV_CSS = `
 `;
 const mounted = new Map(); // symbol id -> FileDiff
 
+const lineComments = (s) => comments.filter((c) => c.target.kind === "lines" && c.target.symbol === s.ref && anchored(c));
 /* One annotation per line that has comments, keyed by what it shows (Pierre re-renders on a new key). */
 function lineAnnotations(s) {
   const at = new Map();
-  for (const c of comments) {
-    const t = c.target;
-    if (t.kind !== "lines" || t.symbol !== s.ref || !anchored(c)) continue;
-    const side = t.side === "old" ? "deletions" : "additions", k = `${side}:${t.to}`;
-    at.set(k, { side, lineNumber: t.to, metadata: (at.get(k)?.metadata ?? "") + `${c.key}.${editing.has(c.key)}.${c.text.length};` });
+  for (const c of lineComments(s)) {
+    const { side, line } = here(c).at, k = `${side}:${line}`;
+    at.set(k, { side, lineNumber: line, metadata: (at.get(k)?.metadata ?? "") + `${c.key}.${editing.has(c.key)}.${c.text.length};` });
   }
   return [...at.values()];
 }
@@ -257,10 +273,9 @@ function mount(el) {
       addComment(t);
     },
     renderAnnotation(a) {
-      const side = a.side === "deletions" ? "old" : "new";
       const el = document.createElement("div");
       el.className = "cmts in-code";
-      el.innerHTML = commentsFor((t) => t.kind === "lines" && t.symbol === s.ref && t.side === side && t.to === a.lineNumber);
+      el.innerHTML = lineComments(s).filter((c) => here(c).at.side === a.side && here(c).at.line === a.lineNumber).map(commentHTML).join("");
       return el;
     },
     onPostRender(node, _i, phase) {
@@ -285,12 +300,12 @@ function observeDiffs(root = document) {
 }
 
 /* ---------- symbols ---------- */
-function chipHTML(id, later) {
+function chipHTML(id) {
   const d = DEC[id];
   if (!d) return "";
-  return `<button class="chip${later ? " later" : ""}${state.focus === id ? " active" : ""}" data-dec="${esc(id)}" title="${esc(d.title)}. ${showAll(d)}${later ? " (linked afterwards; doesn't count as an explanation)" : ""}">${whoHTML(d)}<span class="id">${esc(id)}</span><span class="ct">${esc(d.title)}</span></button>`;
+  return `<button class="chip${state.focus === id ? " active" : ""}" data-dec="${esc(id)}" title="${esc(d.title)}. ${showAll(d)}">${whoHTML(d)}<span class="id">${esc(id)}</span><span class="ct">${esc(d.title)}</span></button>`;
 }
-const chipsHTML = (s) => [...s.dec.map((d) => chipHTML(d, false)), ...s.later.map((d) => chipHTML(d, true))].join("");
+const chipsHTML = (s) => allDec(s).map(chipHTML).join("");
 
 function gapText(s) {
   const parts = [];
@@ -313,7 +328,7 @@ const decRef = (d) => `<button class="dref${state.focus === d.id ? " active" : "
 
 /* Beside the code: what it does, why, what was rejected, and the risks, from the decisions first. */
 function reasonsHTML(s) {
-  const decs = [...s.dec, ...s.later].map((id) => DEC[id]).filter(Boolean);
+  const decs = allDec(s).map((id) => DEC[id]).filter(Boolean);
   const [lead, ...also] = decs;
   const sec = (label, body, cls = "") => (body ? `<section class="${cls}"><h4>${label}</h4>${body}</section>` : "");
   const why = [
@@ -365,11 +380,11 @@ function symHTML(s) {
 }
 
 function importRowHTML(s) {
-  const line = s.rows.find((r) => r.t === "+" || r.t === "-") ?? s.rows[0];
+  const changed = s.rows.filter((r) => r.t === "+" || r.t === "-");
   const cls = ["imp", state.current === s.id ? "current" : ""].join(" ");
   return `<div class="${cls}" id="sym-${s.id}" data-id="${s.id}" tabindex="-1">
     <span class="glyph ${s.status}">${GLYPH[s.status]}</span>
-    <code class="${line?.t === "-" ? "minus" : line?.t === "+" ? "plus" : ""}">${esc((line?.s ?? s.name).trim())}</code>
+    <span class="imp-code">${(changed.length ? changed : [{ t: "", s: s.name }]).map((r) => `<code class="${r.t === "-" ? "minus" : r.t === "+" ? "plus" : ""}">${esc(r.s.trim())}</code>`).join("")}</span>
     <span class="sum">${unexplained(s) ? `<span class="pill gap">Unexplained</span> ` : ""}${s.sum ? md(s.sum) : `<span class="unnarrated">Not explained yet.</span>`}</span>
     <span class="acts">${chipsHTML(s)}<button class="link quiet" data-comment="${s.id}">Comment</button><label class="btn view" style="height: 24px" title="Mark viewed (x)"><input type="checkbox" data-rev="${s.id}"${viewed(s) ? " checked" : ""}><span class="off">Mark viewed</span><span class="on">Viewed</span></label></span>
     <div class="cmts" data-cmts="${s.id}">${symComments(s)}</div>
@@ -508,7 +523,7 @@ function renderRail() {
     if (t.kind === "decision" || !anchored(c) || !s) {
       return `<div class="r-item"><span class="r-where">${esc(whereText(t))}</span>${t.kind === "lines" ? `<span class="r-stale">The code it quotes has changed since.</span>${t.quote ? `<pre class="r-quote">${esc(t.quote)}</pre>` : ""}` : ""}${commentHTML(c)}</div>`;
     }
-    return `<a class="r-item" href="#sym-${s.id}" data-jump="${s.id}"><span class="r-where">${esc(shortWhere(t))}${editing.has(c.key) ? " · draft" : ""}</span><span class="r-text">${esc(editing.has(c.key) ? editing.get(c.key) || "…" : c.text)}</span></a>`;
+    return `<a class="r-item" href="#sym-${s.id}" data-jump="${s.id}"><span class="r-where">${esc(shortWhere(here(c)))}${editing.has(c.key) ? " · draft" : ""}</span><span class="r-text">${esc(editing.has(c.key) ? editing.get(c.key) || "…" : c.text)}</span></a>`;
   };
   const why = (s) => (unexplained(s) ? "Unexplained" : s.attnWhy || (needsCare(s) ? "Needs care" : ""));
   const nextCard = next
@@ -634,6 +649,15 @@ function toast(msg) {
   toast.timer = setTimeout(() => t.classList.remove("on"), 3500);
 }
 
+/* Show a moved or deleted symbol's collapsed code. */
+function openCode(id) {
+  const bar = $(`#sym-${id} [data-code]`);
+  if (!bar) return;
+  state.codeOpen.add(id);
+  bar.outerHTML = `<div class="code" data-diff="${id}"></div>`;
+  observeDiffs($("#sym-" + id));
+}
+
 /* ---------- events ---------- */
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#keys, [data-keys]")) { $("#keys").hidden = true; $("[data-keys]").setAttribute("aria-expanded", "false"); }
@@ -660,17 +684,13 @@ document.addEventListener("click", (e) => {
     renderMain(); renderTree(); renderRail();
   } else if (d.quick) { state.quick = state.quick === d.quick ? null : d.quick; renderQuick(); applyFilters(); }
   else if (d.fold) { const s = SYM[d.fold]; setFold(s, !folded(s)); }
-  else if (d.code) {
-    state.codeOpen.add(d.code);
-    const col = t.parentElement;
-    col.innerHTML = `<div class="code" data-diff="${d.code}"></div>`;
-    observeDiffs(col);
-  } else if (d.dec) { if (!e.target.closest(".cmts, .link")) setFocus(d.dec); }
+  else if (d.code) openCode(d.code); else if (d.dec) { if (!e.target.closest(".cmts, .link")) setFocus(d.dec); }
   else if (d.jump) {
     e.preventDefault();
     const s = SYM[d.jump];
     if (!matches(s)) { state.q = ""; state.quick = null; $("#q").value = ""; renderQuick(); applyFilters(); }
     if (folded(s)) setFold(s, false);
+    if (lineComments(s).length) openCode(s.id); // so its line comments can show
     document.body.classList.remove("rail-open");
     setCurrent(d.jump);
   } else if (d.clear !== undefined) setFocus(state.focus);
@@ -706,7 +726,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "x" && cur) setViewed(cur, !viewed(cur));
   else if (e.key === "c" && cur) addComment({ kind: "symbol", symbol: cur.ref });
   else if (e.key === "o" && cur) setFold(cur, !folded(cur));
-  else if (e.key === "e" && cur) $(`#sym-${cur.id} [data-code]`)?.click();
+  else if (e.key === "e" && cur) openCode(cur.id);
   else if (e.key === "n") { const s = nextUp(); if (s) $(`[data-jump="${s.id}"]`)?.click(); }
   else if (e.key === "z") setZen(!document.body.classList.contains("zen"));
   else if (e.key === "/") { if (document.body.classList.contains("zen")) setZen(false); $("#q").focus(); }
@@ -723,9 +743,9 @@ window.addEventListener("scroll", () => {
   spyTimer = setTimeout(() => {
     let cur = null;
     for (const el of $$("#chapters [data-id]:not(.hidden)")) { if (el.getBoundingClientRect().top <= 140) cur = el.dataset.id; else break; }
-    $$("#tree .t-row.current").forEach((el) => el.classList.remove("current"));
-    const o = cur && $(`#tree .t-row[data-jump="${cur}"]`);
-    if (o) { o.classList.add("current"); o.scrollIntoView({ block: "nearest" }); }
+    if (!cur || cur === state.current) return;
+    setCurrent(cur, false); // the keys act on what you're reading
+    $(`#tree .t-row[data-jump="${cur}"]`)?.scrollIntoView({ block: "nearest" });
   }, 60);
 }, { passive: true });
 

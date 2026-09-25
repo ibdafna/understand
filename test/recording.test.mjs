@@ -201,7 +201,7 @@ test("the explanation: every symbol needs a summary; later links never clear a g
       title: "T", intent: "I",
       symbols: {
         "a.ts#var:a": { summary: "Bumped.", attention: "careful", attentionReason: "changes a default", risk: "Noticed later" },
-        "b.ts#var:b": { summary: "Also bumped.", attention: "mechanical", attentionReason: "a value bump", decisions: ["D1"] },
+        "b.ts#var:b": { summary: "Also bumped.", attention: "mechanical", attentionReason: "a value bump" },
       },
     };
     writeFileSync(join(dir, "explanations", "recording.json"), JSON.stringify({ ...expl, symbols: { "a.ts#var:a": expl.symbols["a.ts#var:a"] } }));
@@ -216,7 +216,7 @@ test("the explanation: every symbol needs a summary; later links never clear a g
     const data = JSON.parse(html.match(/const DATA = (.*?);<\/script>/)[1]);
     const b = data.symbols.find((s) => s.name === "b");
     assert.equal(b.explained, false);
-    assert.deepEqual(b.later, ["D1"]);
+    assert.deepEqual(b.later, [], "the explanation can't attach decisions afterwards");
     const a = data.symbols.find((s) => s.name === "a");
     assert.deepEqual(a.risks.map((r) => r.from), ["D1", null]);
     assert.equal(a.attnWhy, attentionReason);
