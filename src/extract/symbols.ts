@@ -13,6 +13,8 @@ interface LangDef {
   id: string;
   extensions: string[];
   grammar: string;
+  /** The Shiki grammar the review page highlights it with. */
+  highlight?: string;
   /** Another language whose outline.scm this one uses (tsx uses typescript's). */
   outline?: string;
   /** Node types that wrap a declaration and belong to it (`export …`, decorators). */
@@ -41,9 +43,9 @@ export function langOf(path: string): Lang | null {
   return languages().get(path.split(".").pop()!.toLowerCase())?.id ?? null;
 }
 
-/** Display language for highlighting ("plain" when we have none). */
+/** The syntax grammar the review page highlights this file with ("plain" when there's none). */
 export function hlLang(path: string): string {
-  return langOf(path) ?? "plain";
+  return languages().get(path.split(".").pop()!.toLowerCase())?.highlight ?? "plain";
 }
 
 export interface Sym {

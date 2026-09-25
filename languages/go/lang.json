@@ -3,6 +3,7 @@
     "go"
   ],
   "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-go.wasm",
+  "highlight": "go",
   "license": {
     "source": "https://github.com/tree-sitter/tree-sitter-go",
     "copyright": "2014 Max Brunsfeld"

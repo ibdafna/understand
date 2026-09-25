@@ -3,6 +3,7 @@
     "rb"
   ],
   "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-ruby.wasm",
+  "highlight": "ruby",
   "license": {
     "source": "https://github.com/tree-sitter/tree-sitter-ruby",
     "copyright": "2016 Rob Rix"

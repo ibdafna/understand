@@ -4,6 +4,7 @@
     "pyi"
   ],
   "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-python.wasm",
+  "highlight": "python",
   "wrappers": [
     "decorated_definition"
   ],

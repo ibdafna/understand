@@ -972,7 +972,7 @@ function langOf(path) {
   return languages().get(path.split(".").pop().toLowerCase())?.id ?? null;
 }
 function hlLang(path) {
-  return langOf(path) ?? "plain";
+  return languages().get(path.split(".").pop().toLowerCase())?.highlight ?? "plain";
 }
 var wasmDir = fileURLToPath(new URL("./wasm/", import.meta.url));
 var runtime;
@@ -1853,7 +1853,7 @@ function relFile(root, p) {
 
 // src/render.ts
 import { createHash as createHash2 } from "node:crypto";
-import { readFileSync as readFileSync7 } from "node:fs";
+import { existsSync as existsSync7, readFileSync as readFileSync7 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var ATTN2 = /* @__PURE__ */ new Set(["careful", "skim", "mechanical"]);
 function viewerData(x, n) {
@@ -1970,7 +1970,8 @@ function renderHtml(x, n) {
   const tpl = readFileSync7(fileURLToPath2(new URL("./viewer.html", import.meta.url)), "utf8");
   const json = JSON.stringify(viewerData(x, n)).replace(/[<\u2028\u2029]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
   const title = (n?.title || `Changes on ${x.startedOn}`).replace(/[<>&`"]/g, "");
-  return tpl.replace("/*__UNDERSTAND_DATA__*/null", () => json).replace("<title>Understand</title>", () => `<title>Understand \xB7 ${title}</title>`);
+  const grammars = [...new Set(Object.values(x.files).map((f) => f.lang))].map((id) => fileURLToPath2(new URL(`./highlight/${id}.js`, import.meta.url))).filter((f) => existsSync7(f)).map((f) => readFileSync7(f, "utf8")).join("\n");
+  return tpl.replace("/*__UNDERSTAND_LANGS__*/", () => grammars).replace("/*__UNDERSTAND_DATA__*/null", () => json).replace("<title>Understand</title>", () => `<title>Understand \xB7 ${title}</title>`);
 }
 
 // src/cli.ts

@@ -3,6 +3,7 @@
     "rs"
   ],
   "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-rust.wasm",
+  "highlight": "rust",
   "leading": [
     "attribute_item"
   ],

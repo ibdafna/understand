@@ -6,6 +6,7 @@
     "jsx"
   ],
   "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-javascript.wasm",
+  "highlight": "javascript",
   "wrappers": [
     "export_statement"
   ],

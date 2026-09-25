@@ -5,6 +5,7 @@
     "cts"
   ],
   "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-typescript.wasm",
+  "highlight": "typescript",
   "wrappers": [
     "export_statement",
     "ambient_declaration",

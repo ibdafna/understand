@@ -3,6 +3,7 @@
     "tsx"
   ],
   "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-tsx.wasm",
+  "highlight": "tsx",
   "outline": "typescript",
   "wrappers": [
     "export_statement",

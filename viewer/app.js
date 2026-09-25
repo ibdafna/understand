@@ -253,8 +253,9 @@ function mount(el) {
   const s = SYM[el.dataset.diff];
   if (!s || mounted.has(s.id)) return;
   const fileDiff = parsePatchFiles(rowsToPatch(s.file, s.rows), "u-" + s.id)[0].files[0];
-  // Only our languages' grammars are bundled; highlight anything else as plain text.
-  if ((DATA.files[s.file]?.lang ?? "plain") === "plain") fileDiff.lang = "text";
+  // Highlight with the grammar this page carries for the file's language, else as plain text.
+  const lang = DATA.files[s.file]?.lang;
+  fileDiff.lang = globalThis.UNDERSTAND_LANGS?.[lang] ? lang : "text";
   const flagged = s.rows.filter((r) => r.x && FLAG_TEXT[r.x]);
   const inst = new FileDiff({
     theme: { dark: "pierre-dark", light: "pierre-light" },

@@ -1,6 +1,7 @@
 // Symbols per language. Each language is data (languages/<id>/); these pin what its outline finds.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { repo } from "./helpers.mjs";
 
 /** The symbols extract finds in a new file, as sorted `kind:key` ids. */
@@ -232,4 +233,18 @@ public class B
 
 test("a language with no data is one whole-file change", () => {
   same(outline("notes.txt", "hello\n"), ["file"]);
+});
+
+test("a page carries the syntax grammars of the languages in its diff, and no others", () => {
+  const t = repo();
+  try {
+    t.write("README", "x\n");
+    t.commit();
+    t.bash("add files", () => { t.write("a.rs", "fn main() {}\n"); t.write("b.py", "x = 1\n"); });
+    const html = readFileSync(t.u("render").trim(), "utf8");
+    const carried = [...html.matchAll(/UNDERSTAND_LANGS\?\?=\{\}\)\.(\w+)=/g)].map((m) => m[1]).sort();
+    assert.deepEqual(carried, ["python", "rust"]);
+  } finally {
+    t.cleanup();
+  }
 });

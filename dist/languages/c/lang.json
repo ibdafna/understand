@@ -4,6 +4,7 @@
     "h"
   ],
   "grammar": "languages/c/tree-sitter-c.wasm",
+  "highlight": "c",
   "transparent": [
     "preproc_ifdef",
     "preproc_if",

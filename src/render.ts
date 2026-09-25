@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Extract } from "./extract/index.js";
 import type { Explanation } from "./explanation.js";
@@ -129,5 +129,14 @@ export function renderHtml(x: Extract, n: Explanation | null): string {
   const tpl = readFileSync(fileURLToPath(new URL("./viewer.html", import.meta.url)), "utf8");
   const json = JSON.stringify(viewerData(x, n)).replace(/[<\u2028\u2029]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
   const title = (n?.title || `Changes on ${x.startedOn}`).replace(/[<>&`"]/g, "");
-  return tpl.replace("/*__UNDERSTAND_DATA__*/null", () => json).replace("<title>Understand</title>", () => `<title>Understand · ${title}</title>`);
+  // Syntax grammars for just the languages this diff shows.
+  const grammars = [...new Set(Object.values(x.files).map((f) => f.lang))]
+    .map((id) => fileURLToPath(new URL(`./highlight/${id}.js`, import.meta.url)))
+    .filter((f) => existsSync(f))
+    .map((f) => readFileSync(f, "utf8"))
+    .join("\n");
+  return tpl
+    .replace("/*__UNDERSTAND_LANGS__*/", () => grammars)
+    .replace("/*__UNDERSTAND_DATA__*/null", () => json)
+    .replace("<title>Understand</title>", () => `<title>Understand · ${title}</title>`);
 }

@@ -22,8 +22,9 @@ const cli = await build({
   metafile: true,
 });
 
-// The viewer: @pierre/diffs renders the diffs, trimmed to our five languages and one theme pair,
-// highlighting with Shiki's JavaScript regex engine (no WebAssembly), all inlined into one page.
+// The viewer: @pierre/diffs renders the diffs with one theme pair, highlighting with Shiki's
+// JavaScript regex engine (no WebAssembly), all inlined into one page. Grammars aren't in it: each
+// language's is its own script in dist/highlight/, and a page carries only those its diff uses.
 const THEMES = new Set(["pierre-dark", "pierre-light"]);
 const trim = {
   name: "trim",
@@ -54,6 +55,17 @@ if (shell.split("/*__UNDERSTAND_APP__*/").length !== 2) throw new Error("viewer/
 const page = shell.replace("/*__UNDERSTAND_APP__*/", () => app.replace(/<\/script/gi, "<\\/script"));
 writeFileSync("dist/viewer.html", page);
 
+mkdirSync("dist/highlight", { recursive: true });
+const highlightInputs = {};
+for (const id of new Set(LANGS.map((l) => l.highlight).filter(Boolean))) {
+  const grammar = await build({
+    stdin: { contents: `import g from "@shikijs/langs/${id}"; (globalThis.UNDERSTAND_LANGS ??= {})[${JSON.stringify(id)}] = g;`, resolveDir: ".", loader: "js" },
+    bundle: true, minify: true, format: "iife", target: "es2022", write: false, legalComments: "none", metafile: true,
+  });
+  writeFileSync(`dist/highlight/${id}.js`, grammar.outputFiles[0].text.replace(/<\/script/gi, "<\\/script"));
+  Object.assign(highlightInputs, grammar.metafile.inputs);
+}
+
 // .cjs: the runtime is UMD and must not be treated as ESM under this package's "type": "module".
 copyFileSync(WASM + "tree-sitter.js", "dist/wasm/tree-sitter.cjs");
 copyFileSync(WASM + "tree-sitter.wasm", "dist/wasm/tree-sitter.wasm");
@@ -70,6 +82,7 @@ for (const l of LANGS) if (!treeSitter.some(([, url]) => url === l.license.sourc
 writeFileSync("dist/THIRD_PARTY_NOTICES.md", "# Third-party notices\n\nThe built plugin in this folder includes the following software.\n\n" +
   "## Bundled into dist/understand.mjs\n\n" + notices(cli.metafile) +
   "\n## Bundled into dist/viewer.html (and every page rendered from it)\n\n" + viewerNotices + "\n" +
+  "## Syntax grammars in dist/highlight/ (a page carries those for the languages it shows)\n\n" + notices({ inputs: highlightInputs }) + "\n" +
   section("@vscode/tree-sitter-wasm (the WebAssembly builds in dist/wasm/)", "https://github.com/microsoft/vscode-tree-sitter-wasm", readFileSync("node_modules/@vscode/tree-sitter-wasm/LICENSE", "utf8")) +
   treeSitter.map(([name, url, holder]) => section(name, url, mit(holder))).join(""));
 console.log(`built dist/ (viewer ${(page.length / 1024 / 1024).toFixed(2)} MiB)`);
