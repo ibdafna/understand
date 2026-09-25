@@ -1,0 +1,1 @@
+{ "extensions": ["js", "mjs", "cjs", "jsx"], "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-javascript.wasm", "wrappers": ["export_statement"] }

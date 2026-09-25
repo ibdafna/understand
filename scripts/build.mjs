@@ -2,10 +2,11 @@
 // works without `npm install`.
 import { build } from "esbuild";
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 const WASM = "node_modules/@vscode/tree-sitter-wasm/wasm/";
-const GRAMMARS = ["go", "typescript", "tsx", "javascript", "python"];
+// Each language is data: languages/<id>/lang.json names its grammar; outline.scm is its query.
+const LANGS = readdirSync("languages").map((id) => ({ id, ...JSON.parse(readFileSync(`languages/${id}/lang.json`, "utf8")) }));
 
 rmSync("dist", { recursive: true, force: true });
 mkdirSync("dist/wasm", { recursive: true });
@@ -55,7 +56,12 @@ writeFileSync("dist/viewer.html", page);
 
 // .cjs: the runtime is UMD and must not be treated as ESM under this package's "type": "module".
 copyFileSync(WASM + "tree-sitter.js", "dist/wasm/tree-sitter.cjs");
-for (const f of ["tree-sitter.wasm", ...GRAMMARS.map((g) => `tree-sitter-${g}.wasm`)]) copyFileSync(WASM + f, "dist/wasm/" + f);
+copyFileSync(WASM + "tree-sitter.wasm", "dist/wasm/tree-sitter.wasm");
+for (const l of LANGS) {
+  copyFileSync(l.grammar, "dist/wasm/" + basename(l.grammar));
+  mkdirSync(`dist/languages/${l.id}`, { recursive: true });
+  for (const f of readdirSync(`languages/${l.id}`)) copyFileSync(`languages/${l.id}/${f}`, `dist/languages/${l.id}/${f}`);
+}
 
 const mit = (holder) => `MIT License\n\nCopyright (c) ${holder}\n\n${readFileSync("LICENSE", "utf8").split("\n").slice(4).join("\n").trim()}\n`;
 const treeSitter = [

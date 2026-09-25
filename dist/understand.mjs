@@ -320,9 +320,9 @@ function ownerGone(owner) {
     return e.code === "ESRCH";
   }
 }
-function writeAtomic(file2, text) {
+function writeAtomic(file2, text2) {
   const tmp = `${file2}.${process.pid}.tmp`;
-  writeFileSync2(tmp, text, { mode: FILE_MODE });
+  writeFileSync2(tmp, text2, { mode: FILE_MODE });
   renameSync2(tmp, file2);
 }
 function readJson(file2, dflt) {
@@ -952,69 +952,175 @@ function firstLine(c) {
 }
 
 // src/extract/symbols.ts
+import { readdirSync as readdirSync2, readFileSync as readFileSync5 } from "node:fs";
 import { createRequire } from "node:module";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
-var EXT = {
-  go: "go",
-  ts: "typescript",
-  mts: "typescript",
-  cts: "typescript",
-  tsx: "tsx",
-  js: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  jsx: "javascript",
-  py: "python"
-};
+var langDir = fileURLToPath(new URL("./languages/", import.meta.url));
+var defs = null;
+function languages() {
+  if (!defs) {
+    defs = /* @__PURE__ */ new Map();
+    for (const id of readdirSync2(langDir)) {
+      const def = { id, ...JSON.parse(readFileSync5(`${langDir}${id}/lang.json`, "utf8")) };
+      for (const ext of def.extensions) defs.set(ext, def);
+    }
+  }
+  return defs;
+}
 function langOf(path) {
-  return EXT[path.split(".").pop().toLowerCase()] ?? null;
+  return languages().get(path.split(".").pop().toLowerCase())?.id ?? null;
 }
 function hlLang(path) {
-  const l = langOf(path);
-  return l === "go" ? "go" : l === "python" ? "py" : l ? "ts" : "plain";
+  return langOf(path) ?? "plain";
 }
 var wasmDir = fileURLToPath(new URL("./wasm/", import.meta.url));
 var runtime;
-var parsers = /* @__PURE__ */ new Map();
-async function parserFor(lang) {
+var loaded = /* @__PURE__ */ new Map();
+async function load(lang) {
   if (!runtime) {
     runtime = createRequire(import.meta.url)(wasmDir + "tree-sitter.cjs");
     await runtime.Parser.init({ locateFile: (f) => wasmDir + f });
   }
-  if (!parsers.has(lang)) {
-    const language = await runtime.Language.load(`${wasmDir}tree-sitter-${lang}.wasm`);
-    const p = new runtime.Parser();
-    p.setLanguage(language);
-    parsers.set(lang, p);
+  if (!loaded.has(lang)) {
+    const def = [...languages().values()].find((d) => d.id === lang);
+    const language = await runtime.Language.load(wasmDir + basename(def.grammar));
+    const parser = new runtime.Parser();
+    parser.setLanguage(language);
+    const query = new runtime.Query(language, readFileSync5(`${langDir}${def.outline ?? def.id}/outline.scm`, "utf8"));
+    loaded.set(lang, { parser, query, def });
   }
-  return parsers.get(lang);
+  return loaded.get(lang);
 }
 async function symbolsOf(lang, src) {
-  const tree = (await parserFor(lang)).parse(src);
-  const b = new Builder(src);
+  const { parser, query, def } = await load(lang);
+  const tree = parser.parse(src);
   const root = tree.rootNode;
-  if (lang === "go") goWalk(root, b);
-  else if (lang === "python") pyBlock(root.namedChildren, b, "");
-  else tsBlock(root.namedChildren, b, "");
+  const b = new Builder(src, def.leading ?? []);
+  const wrappers = new Set(def.wrappers ?? []);
+  const byNode = /* @__PURE__ */ new Map();
+  for (const m of query.matches(root)) {
+    const cap = {};
+    for (const c of m.captures) (cap[c.name] ??= []).push(c.node);
+    let node = cap.item?.[0];
+    if (!node) continue;
+    while (node.parent && wrappers.has(node.parent.type)) node = node.parent;
+    const prev = byNode.get(node.id);
+    const names = [...prev?.cap.name ?? [], ...cap.name ?? []];
+    if (!prev || m.patternIndex < prev.pattern) byNode.set(node.id, { node, pattern: m.patternIndex, cap, props: { ...m.setProperties ?? {} }, parent: null, kids: [], ok: false, qn: "" });
+    const it = byNode.get(node.id);
+    if (names.length) it.cap.name = [...new Map(names.map((n) => [n.id, n])).values()].sort((x, y) => x.startIndex - y.startIndex);
+  }
+  const items = [...byNode.values()].sort((x, y) => x.node.startIndex - y.node.startIndex || y.node.endIndex - x.node.endIndex);
+  const stack = [];
+  const top = [];
+  for (const it of items) {
+    while (stack.length && !(stack.at(-1).node.startIndex <= it.node.startIndex && it.node.endIndex <= stack.at(-1).node.endIndex)) stack.pop();
+    const parent = stack.at(-1) ?? null;
+    const home2 = (it.cap.group?.[0] ?? it.node).parent?.id;
+    it.ok = parent ? parent.ok && !!parent.props.container && home2 === (parent.cap.body?.[0] ?? parent.node).id : home2 === root.id;
+    if (it.ok) {
+      it.parent = parent;
+      (parent ? parent.kids : top).push(it);
+      const name = nameOf(it);
+      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : parent && it.props.qualify !== "no" ? `${parent.qn}.${name}` : name;
+    }
+    stack.push(it);
+  }
+  emit(top, b);
   tree.delete();
   return { syms: b.syms, groups: b.groups };
 }
+var text = (n) => flat(unquote(n.text));
+function nameOf(it) {
+  if (it.props.name === "text") {
+    const t = flat(it.node.text).replace(/;$/, "");
+    return t.length > 60 ? t.slice(0, 57) + "\u2026" : t;
+  }
+  const names = (it.cap.name ?? []).map(text).join(", ");
+  const own = names || (it.cap.key ? text(it.cap.key[0]) : "?");
+  return it.cap["name.prefix"] ? `${text(it.cap["name.prefix"][0])} ${own}` : own;
+}
+function keyOf(it) {
+  const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
+  const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
+  const scope = it.cap.scope ? text(it.cap.scope[0]) : it.props.qualify === "no" ? "" : it.parent?.qn;
+  return (scope ? scope + "." : "") + prefix + own;
+}
+function sigOf(it, node = it.node) {
+  const body = it.cap.body?.[0] ?? null;
+  const sig = it.props.sig === "full" ? it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text : header(node, body);
+  return it.props["sig.prefix"] ? `${it.props["sig.prefix"]} ${sig}` : sig;
+}
+var kindOf = (it) => it.parent && it.props["kind.member"] || (it.cap.kind ? it.cap.kind[0].text : it.props.kind ?? "var");
+function emit(list2, b) {
+  const from = /* @__PURE__ */ new Map();
+  const folded = /* @__PURE__ */ new Set();
+  for (let i = 0; i < list2.length; i++) {
+    if (!list2[i].props.fold) continue;
+    let j = i;
+    while (j < list2.length && list2[j].props.fold) j++;
+    const impl = list2[j];
+    if (impl && nameOf(impl) === nameOf(list2[i]) && kindOf(impl) === kindOf(list2[i])) {
+      for (let k = i; k < j; k++) folded.add(list2[k]);
+      from.set(impl, Math.min(from.get(impl) ?? Infinity, b.leadStart(list2[i].node)));
+    }
+    i = j - 1;
+  }
+  for (let i = 0; i < list2.length; i++) {
+    const it = list2[i];
+    if (folded.has(it)) continue;
+    const group = it.cap.group?.[0];
+    if (group) {
+      let j = i;
+      while (j < list2.length && list2[j].cap.group?.[0].id === group.id) j++;
+      const members = list2.slice(i, j);
+      i = j - 1;
+      if (it.props.collapse === "single" && members.length === 1) {
+        b.add({ kind: kindOf(it), key: keyOf(it), name: it.qn, sig: sigOf(it), from: b.leadStart(group), outer: group });
+        continue;
+      }
+      const ordinal = it.props.ordinal && members.some((m) => m.cap.value && new RegExp(`\\b${it.props.ordinal}\\b`).test(m.cap.value[0].text));
+      const syms = members.map((m, k) => {
+        const sym = b.add({ kind: kindOf(m), key: keyOf(m), name: m.qn, sig: sigOf(m), from: b.leadStart(m.node), outer: m.node, ...ordinal ? { iota: k } : {} });
+        if (ordinal && !m.cap.value) sym.cmp += `\0iota@${k}`;
+        return sym;
+      });
+      b.group(b.leadStart(group), endRow(group), syms);
+      continue;
+    }
+    b.add({ kind: kindOf(it), key: keyOf(it), name: it.qn, sig: sigOf(it), from: from.get(it) ?? b.leadStart(it.node), outer: it.node, members: it.kids.map((k) => k.node) });
+    emit(it.kids, b);
+  }
+}
 var Builder = class {
+  constructor(src, leading) {
+    this.leading = leading;
+    this.lines = src.split("\n");
+  }
+  leading;
   syms = [];
   groups = [];
   lines;
   seen = /* @__PURE__ */ new Map();
-  constructor(src) {
-    this.lines = src.split("\n");
+  /** Where a declaration starts once the doc comments (and attributes) directly above it are included. */
+  leadStart(n) {
+    let start = row(n);
+    let p = n.previousNamedSibling;
+    while (p && (/comment/.test(p.type) || this.leading.includes(p.type)) && endRow(p) === start - 1) {
+      start = row(p);
+      p = p.previousNamedSibling;
+    }
+    return start;
   }
   add(o) {
     let key = `${o.kind === "import" ? "import" : o.kind === "export" ? "export" : kindKey(o.kind)}:${o.key}`;
     const n = (this.seen.get(key) ?? 0) + 1;
     this.seen.set(key, n);
     if (n > 1) key += `#${n}`;
-    const outer = o.outer ?? o.node;
+    const outer = o.outer;
     const to = endRow(outer);
-    const excl = (o.members ?? []).map((m) => [startWithComments(m), endRow(m)]);
+    const excl = (o.members ?? []).map((m) => [this.leadStart(m), endRow(m)]);
     const own = [];
     for (let l = o.from; l <= to; l++) if (!excl.some(([a, z]) => l >= a && l <= z)) own.push(l);
     const lead = o.from < row(outer) ? this.lines.slice(o.from - 1, row(outer) - 1).join("\n") + "\n" : "";
@@ -1045,15 +1151,6 @@ function tidySig(s) {
 }
 var row = (n) => n.startPosition.row + 1;
 var endRow = (n) => n.endPosition.row + 1 - (n.endPosition.row > n.startPosition.row && n.text.endsWith("\n") ? 1 : 0);
-function startWithComments(n) {
-  let start = row(n);
-  let p = n.previousNamedSibling;
-  while (p && p.type === "comment" && endRow(p) === start - 1) {
-    start = row(p);
-    p = p.previousNamedSibling;
-  }
-  return start;
-}
 function header(n, body) {
   if (!body) return n.text.split("\n")[0];
   const i = n.text.lastIndexOf(body.text);
@@ -1061,215 +1158,6 @@ function header(n, body) {
 }
 var unquote = (s) => s.replace(/^["'`]|["'`]$/g, "");
 var flat = (s) => s.replace(/\s+/g, " ").trim();
-function goWalk(root, b) {
-  for (const n of root.namedChildren) {
-    switch (n.type) {
-      case "import_declaration": {
-        const specs = n.descendantsOfType("import_spec");
-        const members = specs.map((s) => {
-          const path = unquote(s.childForFieldName("path")?.text ?? s.text);
-          const alias = s.childForFieldName("name")?.text;
-          return b.add({ kind: "import", key: path, name: alias ? `${alias} ${path}` : path, sig: s.text, from: startWithComments(s), node: s });
-        });
-        b.group(startWithComments(n), endRow(n), members);
-        break;
-      }
-      case "function_declaration": {
-        const name = n.childForFieldName("name")?.text ?? "?";
-        b.add({ kind: "func", key: name, name, sig: header(n, n.childForFieldName("body")), from: startWithComments(n), node: n });
-        break;
-      }
-      case "method_declaration": {
-        const name = n.childForFieldName("name")?.text ?? "?";
-        const recv = n.childForFieldName("receiver")?.descendantsOfType("type_identifier")[0]?.text ?? "?";
-        b.add({ kind: "method", key: `${recv}.${name}`, name: `${recv}.${name}`, sig: header(n, n.childForFieldName("body")), from: startWithComments(n), node: n });
-        break;
-      }
-      case "type_declaration":
-      case "const_declaration":
-      case "var_declaration": {
-        const isType = n.type === "type_declaration";
-        const kw = isType ? "type" : n.type === "const_declaration" ? "const" : "var";
-        const specs = n.descendantsOfType(isType ? ["type_spec", "type_alias"] : [kw + "_spec"]).filter((s) => sameGroup(s, n));
-        const usesIota = kw === "const" && specs.some((s) => /\biota\b/.test(s.childForFieldName("value")?.text ?? ""));
-        if (specs.length === 1) {
-          const s = specs[0];
-          const name = specName(s);
-          b.add({ kind: specKind(s, kw), key: name, name, sig: `${kw} ${s.text.split("\n")[0]}`, from: startWithComments(n), node: n });
-          break;
-        }
-        const members = specs.map((s, i) => {
-          const name = specName(s);
-          const implicit = usesIota && !s.childForFieldName("value");
-          const sym = b.add({ kind: specKind(s, kw), key: name, name, sig: `${kw} ${s.text.split("\n")[0]}`, from: startWithComments(s), node: s, ...usesIota ? { iota: i } : {} });
-          if (implicit) sym.cmp += `\0iota@${i}`;
-          return sym;
-        });
-        b.group(startWithComments(n), endRow(n), members);
-        break;
-      }
-    }
-  }
-}
-function sameGroup(spec, decl) {
-  return spec.startPosition.row >= decl.startPosition.row && spec.endPosition.row <= decl.endPosition.row;
-}
-function specName(s) {
-  return s.childrenForFieldName("name").map((x) => x.text).join(", ") || s.childForFieldName("name")?.text || "?";
-}
-function specKind(s, kw) {
-  if (kw !== "type") return kw;
-  const t = s.childForFieldName("type")?.type;
-  return t === "struct_type" ? "struct" : t === "interface_type" ? "interface" : "type";
-}
-var TS_DECL = /* @__PURE__ */ new Set([
-  "function_declaration",
-  "generator_function_declaration",
-  "class_declaration",
-  "abstract_class_declaration",
-  "interface_declaration",
-  "type_alias_declaration",
-  "enum_declaration",
-  "lexical_declaration",
-  "variable_declaration",
-  "function_signature",
-  "internal_module",
-  "module",
-  "ambient_declaration"
-]);
-var MEMBER_TYPES = /* @__PURE__ */ new Set(["method_definition", "abstract_method_signature", "method_signature", "public_field_definition", "field_definition"]);
-function unwrap(outer) {
-  let n = outer;
-  let declare = false;
-  if (n.type === "export_statement") n = n.childForFieldName("declaration") ?? n.namedChildren.find((c) => TS_DECL.has(c.type)) ?? n;
-  if (n.type === "ambient_declaration") {
-    declare = true;
-    n = n.namedChildren.find((c) => TS_DECL.has(c.type) || c.type === "statement_block") ?? n;
-  }
-  if (n.type === "expression_statement" && n.namedChildren[0]?.type === "internal_module") n = n.namedChildren[0];
-  return { n, declare };
-}
-var nameOf = (n) => n.childForFieldName("name")?.text ?? "";
-function tsBlock(nodes, b, prefix) {
-  const foldInto = /* @__PURE__ */ new Map();
-  for (let i = 0; i < nodes.length; i++) {
-    if (unwrap(nodes[i]).n.type !== "function_signature") continue;
-    let j = i;
-    while (j < nodes.length && unwrap(nodes[j]).n.type === "function_signature") j++;
-    const impl = nodes[j] && unwrap(nodes[j]).n;
-    if (impl?.type === "function_declaration" && nameOf(impl) === nameOf(unwrap(nodes[i]).n)) foldInto.set(i, j);
-  }
-  const foldStart = /* @__PURE__ */ new Map();
-  for (const [sig, impl] of foldInto) foldStart.set(impl, Math.min(foldStart.get(impl) ?? Infinity, startWithComments(nodes[sig])));
-  nodes.forEach((outer, i) => {
-    if (foldInto.has(i)) return;
-    const { n, declare } = unwrap(outer);
-    const from = foldStart.get(i) ?? startWithComments(outer);
-    const name = nameOf(n) || "?";
-    const q = prefix + name;
-    const sig = (declare && !outer.text.startsWith("declare") ? "declare " : "") + header(outer, n.childForFieldName("body"));
-    if (outer.type === "export_statement" && n === outer) {
-      const text = flat(outer.text).replace(/;$/, "");
-      const clause = outer.namedChildren.find((c) => c.type === "export_clause");
-      const src = outer.childForFieldName("source");
-      const key = /^export default\b/.test(text) ? "default" : clause ? flat(clause.text) : src ? `*:${unquote(src.text)}` : text;
-      b.add({ kind: "export", key, name: text.length > 60 ? text.slice(0, 57) + "\u2026" : text, sig: text, from, node: outer });
-      return;
-    }
-    switch (n.type) {
-      case "import_statement": {
-        const src = unquote(n.childForFieldName("source")?.text ?? n.text);
-        b.add({ kind: "import", key: src, name: src, sig: n.text, from, node: n, outer });
-        break;
-      }
-      case "function_declaration":
-      case "generator_function_declaration":
-      case "function_signature":
-        b.add({ kind: "function", key: q, name: q, sig, from, node: n, outer });
-        break;
-      case "class_declaration":
-      case "abstract_class_declaration": {
-        const members = (n.childForFieldName("body")?.namedChildren ?? []).filter((m) => MEMBER_TYPES.has(m.type));
-        b.add({ kind: "class", key: q, name: q, sig, from, node: n, outer, members });
-        for (const m of members) {
-          const field = m.type.endsWith("field_definition");
-          const mn = (m.childForFieldName("name") ?? m.childForFieldName("property"))?.text ?? "?";
-          const acc = /^(?:(?:static|async|public|private|protected|readonly|override|abstract|declare)\s+)*(get|set)\s/.exec(m.text)?.[1];
-          const key = `${q}.${acc ? acc + " " : ""}${mn}`;
-          b.add({ kind: field ? "field" : "method", key, name: `${q}.${mn}`, sig: field ? m.text.split("\n")[0] : header(m, m.childForFieldName("body")), from: startWithComments(m), node: m });
-        }
-        break;
-      }
-      case "internal_module":
-      case "module": {
-        const body = n.childForFieldName("body");
-        const inner = body?.namedChildren ?? [];
-        const key = unquote(name);
-        b.add({ kind: "namespace", key: prefix + key, name: prefix + key, sig, from, node: n, outer, members: inner.filter((c) => c.type !== "comment") });
-        tsBlock(inner, b, `${prefix}${key}.`);
-        break;
-      }
-      case "interface_declaration":
-        b.add({ kind: "interface", key: q, name: q, sig, from, node: n, outer });
-        break;
-      case "type_alias_declaration":
-        b.add({ kind: "type", key: q, name: q, sig: outer.text.split("\n")[0], from, node: n, outer });
-        break;
-      case "enum_declaration":
-        b.add({ kind: "enum", key: q, name: q, sig, from, node: n, outer });
-        break;
-      case "lexical_declaration":
-      case "variable_declaration": {
-        const decls = n.namedChildren.filter((c) => c.type === "variable_declarator");
-        const vname = prefix + decls.map((d) => d.childForFieldName("name")?.text ?? "?").join(", ");
-        const value = decls[0]?.childForFieldName("value");
-        const isFn = value && ["arrow_function", "function_expression", "function", "generator_function"].includes(value.type);
-        const kw = n.text.split(/\s/)[0];
-        b.add({ kind: isFn ? "function" : kw, key: vname, name: vname, sig: isFn ? header(outer, value.childForFieldName("body")) : outer.text.split("\n")[0], from, node: n, outer });
-        break;
-      }
-    }
-  });
-}
-function pyBlock(nodes, b, cls) {
-  for (const outer of nodes) {
-    const n = outer.type === "decorated_definition" ? outer.childForFieldName("definition") ?? outer : outer;
-    const from = startWithComments(outer);
-    switch (n.type) {
-      case "import_statement":
-      case "import_from_statement": {
-        if (cls) break;
-        const t = flat(n.text);
-        b.add({ kind: "import", key: t, name: t, sig: n.text, from, node: n, outer });
-        break;
-      }
-      case "function_definition": {
-        const name = cls + (n.childForFieldName("name")?.text ?? "?");
-        b.add({ kind: cls ? "method" : "function", key: name, name, sig: header(outer, n.childForFieldName("body")), from, node: n, outer });
-        break;
-      }
-      case "class_definition": {
-        const name = cls + (n.childForFieldName("name")?.text ?? "?");
-        const body = n.childForFieldName("body")?.namedChildren ?? [];
-        const members = body.filter((m) => {
-          const d = m.type === "decorated_definition" ? m.childForFieldName("definition") : m;
-          return d?.type === "function_definition" || d?.type === "class_definition";
-        });
-        b.add({ kind: "class", key: name, name, sig: header(outer, n.childForFieldName("body")), from, node: n, outer, members });
-        pyBlock(members, b, name + ".");
-        break;
-      }
-      case "expression_statement": {
-        const a = n.namedChildren[0];
-        if (!cls && a?.type === "assignment") {
-          const name = a.childForFieldName("left")?.text ?? "?";
-          b.add({ kind: "var", key: name, name, sig: n.text.split("\n")[0], from, node: n, outer });
-        }
-        break;
-      }
-    }
-  }
-}
 
 // src/extract/index.ts
 function rangeKey(r) {
@@ -1440,21 +1328,21 @@ function modeRows(ch, fmt) {
   if (ch.status !== "D") rows.push({ t: "+", s: fmt(ch.newSha) });
   return rows;
 }
-function splitLines(text) {
-  const lines = text.split("\n");
+function splitLines(text2) {
+  const lines = text2.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();
   return lines;
 }
 function track(baseTree, startTree, edits, path, baseText, finalText, read) {
-  let text = baseText ?? "";
-  const baseLines = splitLines(text);
+  let text2 = baseText ?? "";
+  const baseLines = splitLines(text2);
   let lines = baseLines.map((_, i) => ({ base: i + 1 }));
   const removedBy = /* @__PURE__ */ new Map();
   const step = (next, label) => {
     const nt = next ?? "";
-    if (nt === text) return;
-    const cur = splitLines(text);
-    const parts = diffLines(text, nt).map((p) => ({ ...p, lines: splitLines(p.value) }));
+    if (nt === text2) return;
+    const cur = splitLines(text2);
+    const parts = diffLines(text2, nt).map((p) => ({ ...p, lines: splitLines(p.value) }));
     const pool = /* @__PURE__ */ new Map();
     let i = 0;
     for (const p of parts) {
@@ -1491,7 +1379,7 @@ function track(baseTree, startTree, edits, path, baseText, finalText, read) {
       }
     }
     lines = out;
-    text = nt;
+    text2 = nt;
   };
   if (baseTree !== startTree) step(read(startTree, path), "before");
   for (const e of edits) {
@@ -1500,7 +1388,7 @@ function track(baseTree, startTree, edits, path, baseText, finalText, read) {
     step(read(e.to, path), e.unverified ? "outside" : e.id);
   }
   step(finalText, "outside");
-  const finalLines = splitLines(text);
+  const finalLines = splitLines(text2);
   return {
     added(n, s) {
       const o = lines[n - 1];
@@ -1577,11 +1465,11 @@ async function namesAtTime(changes, byId, read) {
       if (r.t !== "+" || !r.p || !r.pa || !byId.has(r.p)) continue;
       const key = `${r.p}:${c.file}`;
       if (out.has(key)) continue;
-      const text = read(byId.get(r.p).to, c.file);
+      const text2 = read(byId.get(r.p).to, c.file);
       const byLine = /* @__PURE__ */ new Map();
-      if (text != null) {
+      if (text2 != null) {
         try {
-          for (const sym of (await symbolsOf(lang, text)).syms) for (const l of sym.own) byLine.set(l, [...byLine.get(l) ?? [], sym.name]);
+          for (const sym of (await symbolsOf(lang, text2)).syms) for (const l of sym.own) byLine.set(l, [...byLine.get(l) ?? [], sym.name]);
         } catch {
         }
       }
@@ -1624,12 +1512,12 @@ function attribute(c, byId, claims, unique, namesThen) {
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
 import { existsSync as existsSync6, mkdirSync as mkdirSync4, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname as dirname2, isAbsolute as isAbsolute2, join as join6, relative, resolve, sep } from "node:path";
+import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join6, relative, resolve, sep } from "node:path";
 function realish(p) {
   try {
     return realpathSync(p);
   } catch {
-    return dirname2(p) === p ? p : join6(realish(dirname2(p)), basename(p));
+    return dirname2(p) === p ? p : join6(realish(dirname2(p)), basename2(p));
   }
 }
 function understandHome() {
@@ -1647,7 +1535,7 @@ var Home = class _Home {
   depth = 0;
   static forRepo(root) {
     const common = realpathSync(commonDir(root));
-    const main2 = basename(common) === ".git" ? basename(dirname2(common)) : basename(common).replace(/\.git$/, "");
+    const main2 = basename2(common) === ".git" ? basename2(dirname2(common)) : basename2(common).replace(/\.git$/, "");
     const name = main2.replace(/[^\w.-]/g, "_") + "-" + createHash("sha1").update(common).digest("hex").slice(0, 10);
     const home2 = realish(resolve(understandHome()));
     for (const inside of [realpathSync(root), common]) {
@@ -1781,8 +1669,8 @@ var Home = class _Home {
 
 // src/hook.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync5, realpathSync as realpathSync2 } from "node:fs";
-import { basename as basename2, dirname as dirname3, isAbsolute as isAbsolute3, join as join7, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync6, realpathSync as realpathSync2 } from "node:fs";
+import { basename as basename3, dirname as dirname3, isAbsolute as isAbsolute3, join as join7, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
 var FILE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"]);
 function toolFiles(root, tool, input) {
   if (tool === "apply_patch") {
@@ -1810,7 +1698,7 @@ If the user doesn't want this in a repo, \`understand off\` stops it there (\`--
 async function runHook(event) {
   let home2 = null;
   try {
-    const p = JSON.parse(readFileSync5(0, "utf8") || "{}");
+    const p = JSON.parse(readFileSync6(0, "utf8") || "{}");
     const root = repoRoot(p.cwd || process.cwd());
     if (!root) return;
     home2 = Home.forRepo(root);
@@ -1943,7 +1831,7 @@ function real(p) {
     return realpathSync2(p);
   } catch {
     try {
-      return join7(realpathSync2(dirname3(p)), basename2(p));
+      return join7(realpathSync2(dirname3(p)), basename3(p));
     } catch {
       return p;
     }
@@ -1958,7 +1846,7 @@ function relFile(root, p) {
 
 // src/render.ts
 import { createHash as createHash2 } from "node:crypto";
-import { readFileSync as readFileSync6 } from "node:fs";
+import { readFileSync as readFileSync7 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var ATTN2 = /* @__PURE__ */ new Set(["careful", "skim", "mechanical"]);
 function viewerData(x, n) {
@@ -1979,7 +1867,7 @@ function viewerData(x, n) {
     const mechanicalOnly = decs.length > 0 && decs.every((d) => d.mechanical);
     const attn = note?.attention && ATTN2.has(note.attention) ? note.attention : mechanicalOnly ? "mechanical" : "skim";
     const risks = [
-      ...[...decs, ...later.map((d) => decById.get(d))].flatMap((d) => (d.risks ?? []).map((text) => ({ text, from: d.id }))),
+      ...[...decs, ...later.map((d) => decById.get(d))].flatMap((d) => (d.risks ?? []).map((text2) => ({ text: text2, from: d.id }))),
       ...note?.risk ? [{ text: note.risk, from: null }] : []
     ];
     const shown = [...s.decisions, ...later].map((d) => decById.get(d)).map((d) => d && [d.id, d.title, d.why, d.alternatives, d.risks]);
@@ -2072,7 +1960,7 @@ function decisionChapters(x, domId) {
   return out;
 }
 function renderHtml(x, n) {
-  const tpl = readFileSync6(fileURLToPath2(new URL("./viewer.html", import.meta.url)), "utf8");
+  const tpl = readFileSync7(fileURLToPath2(new URL("./viewer.html", import.meta.url)), "utf8");
   const json = JSON.stringify(viewerData(x, n)).replace(/[<\u2028\u2029]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
   const title = (n?.title || `Changes on ${x.startedOn}`).replace(/[<>&`"]/g, "");
   return tpl.replace("/*__UNDERSTAND_DATA__*/null", () => json).replace("<title>Understand</title>", () => `<title>Understand \xB7 ${title}</title>`);

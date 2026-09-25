@@ -1,24 +1,47 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type Lang = "go" | "typescript" | "tsx" | "javascript" | "python";
+/**
+ * Symbols come from one generic engine: each language is data in languages/<id>/ (lang.json and an
+ * outline.scm tree-sitter query), and nothing here knows any language by name.
+ */
+export type Lang = string;
 
-const EXT: Record<string, Lang> = {
-  go: "go",
-  ts: "typescript", mts: "typescript", cts: "typescript",
-  tsx: "tsx",
-  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
-  py: "python",
-};
-
-export function langOf(path: string): Lang | null {
-  return EXT[path.split(".").pop()!.toLowerCase()] ?? null;
+interface LangDef {
+  id: string;
+  extensions: string[];
+  grammar: string;
+  /** Another language whose outline.scm this one uses (tsx uses typescript's). */
+  outline?: string;
+  /** Node types that wrap a declaration and belong to it (`export …`, decorators). */
+  wrappers?: string[];
+  /** Node types that lead a declaration like doc comments do (attributes). */
+  leading?: string[];
 }
 
-/** Display language for highlighting; the viewer only distinguishes these. */
+const langDir = fileURLToPath(new URL("./languages/", import.meta.url));
+let defs: Map<string, LangDef> | null = null;
+
+function languages(): Map<string, LangDef> {
+  if (!defs) {
+    defs = new Map();
+    for (const id of readdirSync(langDir)) {
+      const def: LangDef = { id, ...JSON.parse(readFileSync(`${langDir}${id}/lang.json`, "utf8")) };
+      for (const ext of def.extensions) defs.set(ext, def);
+    }
+  }
+  return defs;
+}
+
+export function langOf(path: string): Lang | null {
+  return languages().get(path.split(".").pop()!.toLowerCase())?.id ?? null;
+}
+
+/** Display language for highlighting ("plain" when we have none). */
 export function hlLang(path: string): string {
-  const l = langOf(path);
-  return l === "go" ? "go" : l === "python" ? "py" : l ? "ts" : "plain";
+  return langOf(path) ?? "plain";
 }
 
 export interface Sym {
@@ -47,44 +70,175 @@ export interface FileSymbols {
 
 // Minimal view of web-tree-sitter's Node; the runtime is loaded dynamically from dist/wasm.
 interface TSNode {
+  id: number;
   type: string;
   text: string;
+  startIndex: number;
+  endIndex: number;
   startPosition: { row: number };
   endPosition: { row: number };
-  namedChildren: TSNode[];
+  parent: TSNode | null;
   previousNamedSibling: TSNode | null;
-  childForFieldName(name: string): TSNode | null;
-  childrenForFieldName(name: string): TSNode[];
-  descendantsOfType(type: string | string[]): TSNode[];
 }
 
 const wasmDir = fileURLToPath(new URL("./wasm/", import.meta.url));
 let runtime: any;
-const parsers = new Map<Lang, any>();
+const loaded = new Map<Lang, { parser: any; query: any; def: LangDef }>();
 
-async function parserFor(lang: Lang) {
+async function load(lang: Lang) {
   if (!runtime) {
     runtime = createRequire(import.meta.url)(wasmDir + "tree-sitter.cjs");
     await runtime.Parser.init({ locateFile: (f: string) => wasmDir + f });
   }
-  if (!parsers.has(lang)) {
-    const language = await runtime.Language.load(`${wasmDir}tree-sitter-${lang}.wasm`);
-    const p = new runtime.Parser();
-    p.setLanguage(language);
-    parsers.set(lang, p);
+  if (!loaded.has(lang)) {
+    const def = [...languages().values()].find((d) => d.id === lang)!;
+    const language = await runtime.Language.load(wasmDir + basename(def.grammar));
+    const parser = new runtime.Parser();
+    parser.setLanguage(language);
+    const query = new runtime.Query(language, readFileSync(`${langDir}${def.outline ?? def.id}/outline.scm`, "utf8"));
+    loaded.set(lang, { parser, query, def });
   }
-  return parsers.get(lang);
+  return loaded.get(lang)!;
+}
+
+/**
+ * One candidate symbol from a query match. Captures: @item (the declaration), @name (repeatable,
+ * joined with ", "), @key (its identity when not the name), @key.prefix / @name.prefix (prepended
+ * with a space: accessors, import aliases), @scope (qualifier instead of the container: a Go
+ * receiver), @body (the signature is the text before it), @group (a declaration block the item's
+ * lines share), @value, @kind (the kind from source text). Properties (#set!): kind, kind.member
+ * (the kind inside a container), container, sig ("full"), sig.prefix, key, key.prefix, name
+ * ("text": the item's flattened text), collapse ("single": a group of one is that one), ordinal
+ * (a word that makes position within the group part of identity: Go's iota), fold ("next":
+ * merges into the next item of the same name: TypeScript overloads), qualify ("no": not named after
+ * its container: an import inside a module block).
+ */
+interface Item {
+  node: TSNode;
+  pattern: number;
+  cap: Record<string, TSNode[]>;
+  props: Record<string, string>;
+  parent: Item | null;
+  kids: Item[];
+  ok: boolean;
+  qn: string;
 }
 
 export async function symbolsOf(lang: Lang, src: string): Promise<FileSymbols> {
-  const tree = (await parserFor(lang)).parse(src);
-  const b = new Builder(src);
+  const { parser, query, def } = await load(lang);
+  const tree = parser.parse(src);
   const root = tree.rootNode as TSNode;
-  if (lang === "go") goWalk(root, b);
-  else if (lang === "python") pyBlock(root.namedChildren, b, "");
-  else tsBlock(root.namedChildren, b, "");
+  const b = new Builder(src, def.leading ?? []);
+  const wrappers = new Set(def.wrappers ?? []);
+
+  // Candidates, one per declaration: wrappers belong to it, and the first pattern to find it wins.
+  const byNode = new Map<number, Item>();
+  for (const m of query.matches(root)) {
+    const cap: Record<string, TSNode[]> = {};
+    for (const c of m.captures) (cap[c.name] ??= []).push(c.node);
+    let node = cap.item?.[0];
+    if (!node) continue;
+    while (node.parent && wrappers.has(node.parent.type)) node = node.parent;
+    const prev = byNode.get(node.id);
+    const names = [...(prev?.cap.name ?? []), ...(cap.name ?? [])];
+    if (!prev || m.patternIndex < prev.pattern) byNode.set(node.id, { node, pattern: m.patternIndex, cap, props: { ...(m.setProperties ?? {}) }, parent: null, kids: [], ok: false, qn: "" });
+    // A declaration of several names (`var a, b`) matches once per name: they belong together.
+    const it = byNode.get(node.id)!;
+    if (names.length) it.cap.name = [...new Map(names.map((n) => [n.id, n])).values()].sort((x, y) => x.startIndex - y.startIndex);
+  }
+
+  // Nesting by containment. A container's members sit directly in its body; items anywhere else
+  // (a function body, an if block) aren't symbols; at the top they must sit directly in the file.
+  const items = [...byNode.values()].sort((x, y) => x.node.startIndex - y.node.startIndex || y.node.endIndex - x.node.endIndex);
+  const stack: Item[] = [];
+  const top: Item[] = [];
+  for (const it of items) {
+    while (stack.length && !(stack.at(-1)!.node.startIndex <= it.node.startIndex && it.node.endIndex <= stack.at(-1)!.node.endIndex)) stack.pop();
+    const parent = stack.at(-1) ?? null;
+    const home = (it.cap.group?.[0] ?? it.node).parent?.id;
+    it.ok = parent ? parent.ok && !!parent.props.container && home === (parent.cap.body?.[0] ?? parent.node).id : home === root.id;
+    if (it.ok) {
+      it.parent = parent;
+      (parent ? parent.kids : top).push(it);
+      const name = nameOf(it);
+      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : parent && it.props.qualify !== "no" ? `${parent.qn}.${name}` : name;
+    }
+    stack.push(it);
+  }
+  emit(top, b);
   tree.delete();
   return { syms: b.syms, groups: b.groups };
+}
+
+const text = (n: TSNode) => flat(unquote(n.text));
+
+function nameOf(it: Item): string {
+  if (it.props.name === "text") {
+    const t = flat(it.node.text).replace(/;$/, "");
+    return t.length > 60 ? t.slice(0, 57) + "…" : t;
+  }
+  const names = (it.cap.name ?? []).map(text).join(", ");
+  const own = names || (it.cap.key ? text(it.cap.key[0]) : "?");
+  return it.cap["name.prefix"] ? `${text(it.cap["name.prefix"][0])} ${own}` : own;
+}
+
+function keyOf(it: Item): string {
+  const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
+  const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
+  const scope = it.cap.scope ? text(it.cap.scope[0]) : it.props.qualify === "no" ? "" : it.parent?.qn;
+  return (scope ? scope + "." : "") + prefix + own;
+}
+
+function sigOf(it: Item, node = it.node): string {
+  const body = it.cap.body?.[0] ?? null;
+  const sig = it.props.sig === "full" ? (it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text) : header(node, body);
+  return it.props["sig.prefix"] ? `${it.props["sig.prefix"]} ${sig}` : sig;
+}
+
+const kindOf = (it: Item) => (it.parent && it.props["kind.member"]) || (it.cap.kind ? it.cap.kind[0].text : it.props.kind ?? "var");
+
+/** Add items to the builder in document order, each followed by its members. */
+function emit(list: Item[], b: Builder) {
+  // Folding: items marked fold merge into the next item with their name (overloads into the implementation).
+  const from = new Map<Item, number>();
+  const folded = new Set<Item>();
+  for (let i = 0; i < list.length; i++) {
+    if (!list[i].props.fold) continue;
+    let j = i;
+    while (j < list.length && list[j].props.fold) j++;
+    const impl = list[j];
+    if (impl && nameOf(impl) === nameOf(list[i]) && kindOf(impl) === kindOf(list[i])) {
+      for (let k = i; k < j; k++) folded.add(list[k]);
+      from.set(impl, Math.min(from.get(impl) ?? Infinity, b.leadStart(list[i].node)));
+    }
+    i = j - 1;
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const it = list[i];
+    if (folded.has(it)) continue;
+    const group = it.cap.group?.[0];
+    if (group) {
+      let j = i;
+      while (j < list.length && list[j].cap.group?.[0].id === group.id) j++;
+      const members = list.slice(i, j);
+      i = j - 1;
+      if (it.props.collapse === "single" && members.length === 1) {
+        b.add({ kind: kindOf(it), key: keyOf(it), name: it.qn, sig: sigOf(it), from: b.leadStart(group), outer: group });
+        continue;
+      }
+      const ordinal = it.props.ordinal && members.some((m) => m.cap.value && new RegExp(`\\b${it.props.ordinal}\\b`).test(m.cap.value[0].text));
+      const syms = members.map((m, k) => {
+        const sym = b.add({ kind: kindOf(m), key: keyOf(m), name: m.qn, sig: sigOf(m), from: b.leadStart(m.node), outer: m.node, ...(ordinal ? { iota: k } : {}) });
+        if (ordinal && !m.cap.value) sym.cmp += `\u0000iota@${k}`;
+        return sym;
+      });
+      b.group(b.leadStart(group), endRow(group), syms);
+      continue;
+    }
+    b.add({ kind: kindOf(it), key: keyOf(it), name: it.qn, sig: sigOf(it), from: from.get(it) ?? b.leadStart(it.node), outer: it.node, members: it.kids.map((k) => k.node) });
+    emit(it.kids, b);
+  }
 }
 
 class Builder {
@@ -92,18 +246,29 @@ class Builder {
   groups: Group[] = [];
   private lines: string[];
   private seen = new Map<string, number>();
-  constructor(src: string) {
+  constructor(src: string, private leading: string[]) {
     this.lines = src.split("\n");
   }
 
-  add(o: { kind: string; key: string; name: string; sig: string; from: number; node: TSNode; outer?: TSNode; members?: TSNode[]; iota?: number }): Sym {
+  /** Where a declaration starts once the doc comments (and attributes) directly above it are included. */
+  leadStart(n: TSNode): number {
+    let start = row(n);
+    let p = n.previousNamedSibling;
+    while (p && (/comment/.test(p.type) || this.leading.includes(p.type)) && endRow(p) === start - 1) {
+      start = row(p);
+      p = p.previousNamedSibling;
+    }
+    return start;
+  }
+
+  add(o: { kind: string; key: string; name: string; sig: string; from: number; outer: TSNode; members?: TSNode[]; iota?: number }): Sym {
     let key = `${o.kind === "import" ? "import" : o.kind === "export" ? "export" : kindKey(o.kind)}:${o.key}`;
     const n = (this.seen.get(key) ?? 0) + 1;
     this.seen.set(key, n);
     if (n > 1) key += `#${n}`;
-    const outer = o.outer ?? o.node;
+    const outer = o.outer;
     const to = endRow(outer);
-    const excl = (o.members ?? []).map((m) => [startWithComments(m), endRow(m)] as const);
+    const excl = (o.members ?? []).map((m) => [this.leadStart(m), endRow(m)] as const);
     const own: number[] = [];
     for (let l = o.from; l <= to; l++) if (!excl.some(([a, z]) => l >= a && l <= z)) own.push(l);
     const lead = o.from < row(outer) ? this.lines.slice(o.from - 1, row(outer) - 1).join("\n") + "\n" : "";
@@ -140,17 +305,6 @@ function tidySig(s: string) {
 const row = (n: TSNode) => n.startPosition.row + 1;
 const endRow = (n: TSNode) => n.endPosition.row + 1 - (n.endPosition.row > n.startPosition.row && n.text.endsWith("\n") ? 1 : 0);
 
-/** Pull contiguous doc comments directly above a declaration into its range. */
-function startWithComments(n: TSNode): number {
-  let start = row(n);
-  let p = n.previousNamedSibling;
-  while (p && p.type === "comment" && endRow(p) === start - 1) {
-    start = row(p);
-    p = p.previousNamedSibling;
-  }
-  return start;
-}
-
 function header(n: TSNode, body: TSNode | null): string {
   if (!body) return n.text.split("\n")[0];
   const i = n.text.lastIndexOf(body.text);
@@ -159,221 +313,3 @@ function header(n: TSNode, body: TSNode | null): string {
 
 const unquote = (s: string) => s.replace(/^["'`]|["'`]$/g, "");
 const flat = (s: string) => s.replace(/\s+/g, " ").trim();
-
-/* ------------------------------ Go ------------------------------ */
-
-function goWalk(root: TSNode, b: Builder) {
-  for (const n of root.namedChildren) {
-    switch (n.type) {
-      case "import_declaration": {
-        const specs = n.descendantsOfType("import_spec");
-        const members = specs.map((s) => {
-          const path = unquote(s.childForFieldName("path")?.text ?? s.text);
-          const alias = s.childForFieldName("name")?.text;
-          return b.add({ kind: "import", key: path, name: alias ? `${alias} ${path}` : path, sig: s.text, from: startWithComments(s), node: s });
-        });
-        b.group(startWithComments(n), endRow(n), members);
-        break;
-      }
-      case "function_declaration": {
-        const name = n.childForFieldName("name")?.text ?? "?";
-        b.add({ kind: "func", key: name, name, sig: header(n, n.childForFieldName("body")), from: startWithComments(n), node: n });
-        break;
-      }
-      case "method_declaration": {
-        const name = n.childForFieldName("name")?.text ?? "?";
-        const recv = n.childForFieldName("receiver")?.descendantsOfType("type_identifier")[0]?.text ?? "?";
-        b.add({ kind: "method", key: `${recv}.${name}`, name: `${recv}.${name}`, sig: header(n, n.childForFieldName("body")), from: startWithComments(n), node: n });
-        break;
-      }
-      case "type_declaration":
-      case "const_declaration":
-      case "var_declaration": {
-        const isType = n.type === "type_declaration";
-        const kw = isType ? "type" : n.type === "const_declaration" ? "const" : "var";
-        const specs = n.descendantsOfType(isType ? ["type_spec", "type_alias"] : [kw + "_spec"]).filter((s) => sameGroup(s, n));
-        const usesIota = kw === "const" && specs.some((s) => /\biota\b/.test(s.childForFieldName("value")?.text ?? ""));
-        if (specs.length === 1) {
-          const s = specs[0];
-          const name = specName(s);
-          b.add({ kind: specKind(s, kw), key: name, name, sig: `${kw} ${s.text.split("\n")[0]}`, from: startWithComments(n), node: n });
-          break;
-        }
-        const members = specs.map((s, i) => {
-          const name = specName(s);
-          const implicit = usesIota && !s.childForFieldName("value");
-          const sym = b.add({ kind: specKind(s, kw), key: name, name, sig: `${kw} ${s.text.split("\n")[0]}`, from: startWithComments(s), node: s, ...(usesIota ? { iota: i } : {}) });
-          if (implicit) sym.cmp += `\u0000iota@${i}`;
-          return sym;
-        });
-        b.group(startWithComments(n), endRow(n), members);
-        break;
-      }
-    }
-  }
-}
-
-function sameGroup(spec: TSNode, decl: TSNode) {
-  return spec.startPosition.row >= decl.startPosition.row && spec.endPosition.row <= decl.endPosition.row;
-}
-
-function specName(s: TSNode) {
-  return s.childrenForFieldName("name").map((x) => x.text).join(", ") || s.childForFieldName("name")?.text || "?";
-}
-
-function specKind(s: TSNode, kw: string) {
-  if (kw !== "type") return kw;
-  const t = s.childForFieldName("type")?.type;
-  return t === "struct_type" ? "struct" : t === "interface_type" ? "interface" : "type";
-}
-
-/* ------------------------ TypeScript / JavaScript ------------------------ */
-
-const TS_DECL = new Set([
-  "function_declaration", "generator_function_declaration", "class_declaration", "abstract_class_declaration",
-  "interface_declaration", "type_alias_declaration", "enum_declaration", "lexical_declaration", "variable_declaration",
-  "function_signature", "internal_module", "module", "ambient_declaration",
-]);
-const MEMBER_TYPES = new Set(["method_definition", "abstract_method_signature", "method_signature", "public_field_definition", "field_definition"]);
-
-/** Unwrap `export …`, `declare …`, and `namespace N {}` (which parses as an expression statement). */
-function unwrap(outer: TSNode): { n: TSNode; declare: boolean } {
-  let n = outer;
-  let declare = false;
-  if (n.type === "export_statement") n = n.childForFieldName("declaration") ?? n.namedChildren.find((c) => TS_DECL.has(c.type)) ?? n;
-  if (n.type === "ambient_declaration") {
-    declare = true;
-    n = n.namedChildren.find((c) => TS_DECL.has(c.type) || c.type === "statement_block") ?? n;
-  }
-  if (n.type === "expression_statement" && n.namedChildren[0]?.type === "internal_module") n = n.namedChildren[0];
-  return { n, declare };
-}
-
-const nameOf = (n: TSNode) => n.childForFieldName("name")?.text ?? "";
-
-function tsBlock(nodes: TSNode[], b: Builder, prefix: string) {
-  // Overload signatures directly before their implementation belong to it.
-  const foldInto = new Map<number, number>();
-  for (let i = 0; i < nodes.length; i++) {
-    if (unwrap(nodes[i]).n.type !== "function_signature") continue;
-    let j = i;
-    while (j < nodes.length && unwrap(nodes[j]).n.type === "function_signature") j++;
-    const impl = nodes[j] && unwrap(nodes[j]).n;
-    if (impl?.type === "function_declaration" && nameOf(impl) === nameOf(unwrap(nodes[i]).n)) foldInto.set(i, j);
-  }
-  const foldStart = new Map<number, number>();
-  for (const [sig, impl] of foldInto) foldStart.set(impl, Math.min(foldStart.get(impl) ?? Infinity, startWithComments(nodes[sig])));
-
-  nodes.forEach((outer, i) => {
-    if (foldInto.has(i)) return;
-    const { n, declare } = unwrap(outer);
-    const from = foldStart.get(i) ?? startWithComments(outer);
-    const name = nameOf(n) || "?";
-    const q = prefix + name;
-    const sig = (declare && !outer.text.startsWith("declare") ? "declare " : "") + header(outer, n.childForFieldName("body"));
-
-    if (outer.type === "export_statement" && n === outer) {
-      const text = flat(outer.text).replace(/;$/, "");
-      const clause = outer.namedChildren.find((c) => c.type === "export_clause");
-      const src = outer.childForFieldName("source");
-      const key = /^export default\b/.test(text) ? "default" : clause ? flat(clause.text) : src ? `*:${unquote(src.text)}` : text;
-      b.add({ kind: "export", key, name: text.length > 60 ? text.slice(0, 57) + "…" : text, sig: text, from, node: outer });
-      return;
-    }
-    switch (n.type) {
-      case "import_statement": {
-        const src = unquote(n.childForFieldName("source")?.text ?? n.text);
-        b.add({ kind: "import", key: src, name: src, sig: n.text, from, node: n, outer });
-        break;
-      }
-      case "function_declaration":
-      case "generator_function_declaration":
-      case "function_signature":
-        b.add({ kind: "function", key: q, name: q, sig, from, node: n, outer });
-        break;
-      case "class_declaration":
-      case "abstract_class_declaration": {
-        const members = (n.childForFieldName("body")?.namedChildren ?? []).filter((m) => MEMBER_TYPES.has(m.type));
-        b.add({ kind: "class", key: q, name: q, sig, from, node: n, outer, members });
-        for (const m of members) {
-          const field = m.type.endsWith("field_definition");
-          const mn = (m.childForFieldName("name") ?? m.childForFieldName("property"))?.text ?? "?";
-          const acc = /^(?:(?:static|async|public|private|protected|readonly|override|abstract|declare)\s+)*(get|set)\s/.exec(m.text)?.[1];
-          const key = `${q}.${acc ? acc + " " : ""}${mn}`;
-          b.add({ kind: field ? "field" : "method", key, name: `${q}.${mn}`, sig: field ? m.text.split("\n")[0] : header(m, m.childForFieldName("body")), from: startWithComments(m), node: m });
-        }
-        break;
-      }
-      case "internal_module":
-      case "module": {
-        const body = n.childForFieldName("body");
-        const inner = body?.namedChildren ?? [];
-        const key = unquote(name);
-        b.add({ kind: "namespace", key: prefix + key, name: prefix + key, sig, from, node: n, outer, members: inner.filter((c) => c.type !== "comment") });
-        tsBlock(inner, b, `${prefix}${key}.`);
-        break;
-      }
-      case "interface_declaration":
-        b.add({ kind: "interface", key: q, name: q, sig, from, node: n, outer });
-        break;
-      case "type_alias_declaration":
-        b.add({ kind: "type", key: q, name: q, sig: outer.text.split("\n")[0], from, node: n, outer });
-        break;
-      case "enum_declaration":
-        b.add({ kind: "enum", key: q, name: q, sig, from, node: n, outer });
-        break;
-      case "lexical_declaration":
-      case "variable_declaration": {
-        const decls = n.namedChildren.filter((c) => c.type === "variable_declarator");
-        const vname = prefix + decls.map((d) => d.childForFieldName("name")?.text ?? "?").join(", ");
-        const value = decls[0]?.childForFieldName("value");
-        const isFn = value && ["arrow_function", "function_expression", "function", "generator_function"].includes(value.type);
-        const kw = n.text.split(/\s/)[0];
-        b.add({ kind: isFn ? "function" : kw, key: vname, name: vname, sig: isFn ? header(outer, value.childForFieldName("body")) : outer.text.split("\n")[0], from, node: n, outer });
-        break;
-      }
-    }
-  });
-}
-
-/* ------------------------------ Python ------------------------------ */
-
-function pyBlock(nodes: TSNode[], b: Builder, cls: string) {
-  for (const outer of nodes) {
-    const n = outer.type === "decorated_definition" ? outer.childForFieldName("definition") ?? outer : outer;
-    const from = startWithComments(outer);
-    switch (n.type) {
-      case "import_statement":
-      case "import_from_statement": {
-        if (cls) break;
-        const t = flat(n.text);
-        b.add({ kind: "import", key: t, name: t, sig: n.text, from, node: n, outer });
-        break;
-      }
-      case "function_definition": {
-        const name = cls + (n.childForFieldName("name")?.text ?? "?");
-        b.add({ kind: cls ? "method" : "function", key: name, name, sig: header(outer, n.childForFieldName("body")), from, node: n, outer });
-        break;
-      }
-      case "class_definition": {
-        const name = cls + (n.childForFieldName("name")?.text ?? "?");
-        const body = n.childForFieldName("body")?.namedChildren ?? [];
-        const members = body.filter((m) => {
-          const d = m.type === "decorated_definition" ? m.childForFieldName("definition") : m;
-          return d?.type === "function_definition" || d?.type === "class_definition";
-        });
-        b.add({ kind: "class", key: name, name, sig: header(outer, n.childForFieldName("body")), from, node: n, outer, members });
-        pyBlock(members, b, name + ".");
-        break;
-      }
-      case "expression_statement": {
-        const a = n.namedChildren[0];
-        if (!cls && a?.type === "assignment") {
-          const name = a.childForFieldName("left")?.text ?? "?";
-          b.add({ kind: "var", key: name, name, sig: n.text.split("\n")[0], from, node: n, outer });
-        }
-        break;
-      }
-    }
-  }
-}

@@ -1,0 +1,1 @@
+{ "extensions": ["py"], "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-python.wasm", "wrappers": ["decorated_definition"] }

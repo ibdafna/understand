@@ -1,0 +1,1 @@
+{ "extensions": ["tsx"], "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-tsx.wasm", "outline": "typescript", "wrappers": ["export_statement", "ambient_declaration", "expression_statement"] }

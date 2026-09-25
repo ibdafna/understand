@@ -1,0 +1,1 @@
+{ "extensions": ["go"], "grammar": "node_modules/@vscode/tree-sitter-wasm/wasm/tree-sitter-go.wasm" }
