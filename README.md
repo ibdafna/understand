@@ -8,7 +8,7 @@ Agents write more code than anyone reads. Understand keeps a **decision log** wh
 - **Honest gaps:** every changed line is traced to the tool call that wrote it. Lines no agent tool wrote (your own edits, other programs), agent edits no decision names, and changes from before recording are flagged, line by line. Nothing written afterwards clears a flag.
 - **Review:** one self-contained HTML file. Read in story or file order, see the rationale beside the code or on hover, focus on a decision to see everything it shaped, and track review progress with `j`/`k`/`x`.
 
-See [`examples/todo-due-dates.html`](examples/todo-due-dates.html) for a page produced by a real Claude Code session: three commits, a change of mind, and a pull request.
+**[ibdafna.github.io/understand](https://ibdafna.github.io/understand)** has live example pages from real sessions in Claude Code and Codex.
 
 ## Install
 
@@ -63,6 +63,7 @@ npm run ship      # release: bump the version, build, test, commit, tag, push to
 | `src/decisionlog.ts` | the shared `.decisions/*.tsv` log |
 | `src/explanation.ts`, `src/render.ts`, `viewer/viewer.html` | the explanation format, its checks, and the page |
 | `skills/record`, `skills/explain` | keeping the log (internal) and writing the page |
+| `site/`, `examples/` | the GitHub Pages site (deployed by CI) and the example pages it shows |
 
 ## License
 

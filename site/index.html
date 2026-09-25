@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Understand: know why your agent wrote every line</title>
+<meta name="description" content="Understand keeps a decision log while a coding agent works, then explains every changed import, function, and class next to its diff. For Claude Code and the Codex CLI.">
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1c1d1f; --muted: #5f636a; --faint: #8b8f96; --line: #e6e6e2;
+  --add: #1a7f37; --add-bg: #e8f6ec; --warn: #b54708; --warn-bg: #fff4e5;
+  --human: #1f5fd1; --human-bg: #e7effd; --agent: #7a3fd1; --agent-bg: #f1eafc; --focus: #1f5fd1;
+  --code-bg: #f1f1ee;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111214; --panel: #18191c; --ink: #e6e7ea; --muted: #a3a7ae; --faint: #71757c; --line: #2a2c31;
+    --add: #5fd38a; --add-bg: #13291c; --warn: #ffb45e; --warn-bg: #36260f;
+    --human: #7eaaff; --human-bg: #1a2640; --agent: #c19bff; --agent-bg: #2a1f40; --focus: #7eaaff;
+    --code-bg: #1f2024;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+a { color: var(--focus); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+header.top { display: flex; align-items: center; gap: 10px; padding: 20px 0; }
+.logo { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--human), var(--agent)); }
+.brand { font-weight: 650; font-size: 17px; letter-spacing: -0.01em; }
+header.top nav { margin-left: auto; display: flex; gap: 20px; font-size: 15px; }
+header.top nav a { color: var(--muted); }
+
+.hero { padding: 48px 0 28px; max-width: 760px; }
+.hero h1 { font-size: clamp(34px, 5.5vw, 52px); line-height: 1.08; letter-spacing: -0.03em; margin: 0 0 18px; text-wrap: balance; }
+.hero p { font-size: 19px; color: var(--muted); margin: 0 0 26px; max-width: 640px; }
+.ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; padding: 10px 18px; border-radius: 9px; font-weight: 600; font-size: 15px; border: 1px solid var(--line); color: var(--ink); background: var(--panel); }
+.btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn:hover { text-decoration: none; filter: brightness(1.08); }
+
+.shot { display: block; margin: 20px 0 8px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); box-shadow: 0 18px 50px rgba(20, 20, 30, .12); }
+.shot img { display: block; width: 100%; height: auto; }
+.caption { font-size: 14px; color: var(--faint); margin: 0 0 56px; }
+
+section { padding: 36px 0; border-top: 1px solid var(--line); }
+section h2 { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 8px; }
+section > p.lead { color: var(--muted); margin: 0 0 26px; max-width: 680px; }
+
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+.card .n { font-family: var(--mono); font-size: 13px; color: var(--faint); }
+.card h3 { font-size: 17px; margin: 6px 0 8px; }
+.card p { margin: 0; font-size: 15px; color: var(--muted); }
+
+.honest { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 7px; border-radius: 5px; margin-right: 6px; vertical-align: 2px; }
+.pill.you { background: var(--human-bg); color: var(--human); }
+.pill.agent { background: var(--agent-bg); color: var(--agent); }
+.pill.gap { background: var(--warn-bg); color: var(--warn); }
+
+.install { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.install h3 { font-size: 16px; margin: 0 0 10px; }
+pre { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; font: 14px/1.6 var(--mono); overflow-x: auto; }
+.install h3 { display: flex; align-items: center; justify-content: space-between; }
+.install h3 button { font: 12px var(--sans); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.note { font-size: 14px; color: var(--muted); margin: 10px 0 0; }
+code { font-family: var(--mono); font-size: .9em; }
+
+.examples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.examples a.card { display: block; color: var(--ink); }
+.examples a.card:hover { text-decoration: none; border-color: var(--faint); }
+.examples a.card span { color: var(--focus); font-size: 14px; font-weight: 600; }
+
+footer { padding: 36px 0 60px; border-top: 1px solid var(--line); color: var(--faint); font-size: 14px; display: flex; gap: 18px; flex-wrap: wrap; }
+footer a { color: var(--muted); }
+
+@media (max-width: 760px) {
+  .steps, .honest, .install, .examples { grid-template-columns: minmax(0, 1fr); }
+  .hero { padding-top: 24px; }
+  header.top nav a.hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <span class="logo" aria-hidden="true"></span><span class="brand">Understand</span>
+    <nav>
+      <a href="#how" class="hide-sm">How it works</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/ibdafna/understand">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>Know why your agent wrote every line.</h1>
+    <p>Understand keeps a decision log while a coding agent works. When you review, it explains every changed import, function, and class next to its diff, and shows you plainly where the explanation has gaps.</p>
+    <div class="ctas">
+      <a class="btn primary" href="examples/todo-due-dates.html">See a live example</a>
+      <a class="btn" href="#install">Install</a>
+    </div>
+  </div>
+
+  <a class="shot" href="examples/todo-due-dates.html" aria-label="Open the live example">
+    <picture>
+      <source srcset="screenshot-dark.png" media="(prefers-color-scheme: dark)">
+      <img src="screenshot.png" alt="A review page: each changed symbol's diff with the reason beside it, the decisions that shaped it, and its risks" width="1440" height="900">
+    </picture>
+  </a>
+  <p class="caption">A real page from a real session: an agent adding due dates to a small Go app over three turns, then opening a pull request.</p>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="lead">Install it once. Nothing to invoke, nothing to remember.</p>
+    <div class="steps">
+      <div class="card"><div class="n">01</div><h3>The agent keeps a decision log</h3><p>As it works, the agent records each choice: what it decided, why, what it rejected, and which functions and imports it shaped. Hooks capture every change it makes.</p></div>
+      <div class="card"><div class="n">02</div><h3>Explain any range</h3><p>A pull request, the whole branch, what's staged, uncommitted changes, or any commits. Opening a PR prompts the page automatically.</p></div>
+      <div class="card"><div class="n">03</div><h3>Review with the why beside the code</h3><p>Read changes in the order that tells the story, see which ones deserve a careful look, and focus on one decision to see everything it touched.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Honest by design</h2>
+    <p class="lead">A plausible story written afterwards is worse than a visible gap. So the page never fills one in.</p>
+    <div class="honest">
+      <div class="card"><h3><span class="pill you">you</span><span class="pill agent">agent</span>Who decided</h3><p>Every decision records whether it was your call or the agent's, captured when it was made.</p></div>
+      <div class="card"><h3><span class="pill gap">!</span>Every line traced</h3><p>Each changed line is traced to the tool call that wrote it. Edits you made by hand, side effects, and changes nobody explained are flagged, line by line.</p></div>
+      <div class="card"><h3>Decisions explain only what they name</h3><p>A decision covers the symbols it names, even through renames. Nothing written later can clear a flag.</p></div>
+      <div class="card"><h3>The log travels with the code</h3><p>Decisions are committed to <code>.decisions/</code> alongside the agent's commits, so anyone can rebuild the page, and future agents can learn why the code is the way it is.</p></div>
+    </div>
+  </section>
+
+  <section id="install">
+    <h2>Install</h2>
+    <p class="lead">Works with Claude Code and the Codex CLI. Needs Node 20+ and git.</p>
+    <div class="install">
+      <div>
+        <h3>Claude Code</h3>
+        <pre><code>claude plugin marketplace add ibdafna/understand
+claude plugin install understand@understand</code></pre>
+      </div>
+      <div>
+        <h3>Codex</h3>
+        <pre><code>codex plugin marketplace add ibdafna/understand
+codex plugin add understand@understand</code></pre>
+        <p class="note">Then open <code>/hooks</code> in Codex and trust Understand's hooks.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Examples</h2>
+    <p class="lead">Both pages were produced by the plugin in live sessions, unedited.</p>
+    <div class="examples">
+      <a class="card" href="examples/todo-due-dates.html"><h3>A Claude Code session</h3><p>Due dates for a Go todo app: seven commits, a change of mind, and a pull request. Every changed symbol explained.</p><span>Open the page →</span></a>
+      <a class="card" href="examples/codex-due-dates.html"><h3>A Codex session</h3><p>The same feature built by Codex, with its edits captured through <code>apply_patch</code>.</p><span>Open the page →</span></a>
+    </div>
+  </section>
+
+  <footer>
+    <span>MIT licensed</span>
+    <a href="https://github.com/ibdafna/understand">Source on GitHub</a>
+    <a href="https://github.com/ibdafna/understand/blob/main/docs/design.md">Design notes</a>
+  </footer>
+</div>
+<script>
+// Copy buttons for the install commands.
+for (const pre of document.querySelectorAll("pre")) {
+  const b = document.createElement("button");
+  b.textContent = "Copy";
+  b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(pre.querySelector("code").textContent);
+      b.textContent = "Copied";
+      setTimeout(() => (b.textContent = "Copy"), 1500);
+    } catch {}
+  });
+  pre.previousElementSibling.appendChild(b);
+}
+</script>
+</body>
+</html>
