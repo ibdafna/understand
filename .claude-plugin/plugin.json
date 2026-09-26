@@ -2,7 +2,7 @@
   "name": "understand",
   "displayName": "Understand",
   "description": "Keeps a decision log while a coding agent works, and explains every changed symbol from it.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "keywords": [
     "code-review",
     "diff",

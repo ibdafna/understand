@@ -1,6 +1,6 @@
 {
   "name": "understand",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Records why a coding agent changed code, then renders a reviewable, symbol-level explanation of the diff.",

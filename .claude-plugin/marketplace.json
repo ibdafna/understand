@@ -8,7 +8,7 @@
       "name": "understand",
       "source": "./",
       "description": "Record decisions while coding; review changes with their rationale.",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ],
   "description": "Understand: a decision log for coding agents, and review pages built from it."
