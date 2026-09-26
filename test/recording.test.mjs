@@ -177,7 +177,7 @@ test("a PR page covers merge-base → HEAD: earlier commits are 'before recordin
     t.edit("a.ts", "a = 2", "a = 3"); // not committed
     const out = t.bash("gh pr create --fill");
     assert.match(out, /understand:explain/);
-    const by = symbolFinder(t.extract("--against", "main"));
+    const by = symbolFinder(t.extract("--pr", "main"));
     assert.equal(by("b.ts#var:b").gaps.before, true);
     const a = by("a.ts#var:a");
     assert.ok(a.rows.some((r) => r.t === "+" && r.s.includes("a = 2")), "HEAD's committed content");

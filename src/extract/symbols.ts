@@ -97,6 +97,7 @@ interface TSNode {
   endPosition: { row: number };
   parent: TSNode | null;
   previousNamedSibling: TSNode | null;
+  descendantsOfType(types: string[], start?: { row: number }, end?: { row: number }): (TSNode | null)[];
 }
 
 const wasmDir = fileURLToPath(new URL("./wasm/", import.meta.url));
@@ -208,15 +209,17 @@ function nameOf(it: Item): string {
 }
 
 function keyOf(it: Item): string {
-  const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
+  const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(/;$/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
   const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
   const scope = [qualifier(it), it.cap.scope && text(it.cap.scope[0])].filter(Boolean).join(it.sep);
   return (scope ? scope + it.sep : "") + prefix + own;
 }
 
-function sigOf(it: Item, node = it.node): string {
+/** The declaration up to its body (or all of it with sig "full"); tidySig flattens it and drops a trailing `{ : ;`. */
+function sigOf(it: Item): string {
+  const node = it.node;
   const body = it.cap.body?.reduce((a, b) => (b.startIndex < a.startIndex ? b : a)) ?? null;
-  let sig = it.props.sig === "full" ? (it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text) : header(node, body);
+  let sig = it.props.sig === "full" ? node.text : header(node, body);
   // A comment inside the signature (`#define N 10 /* … */`) isn't part of it.
   for (const c of node.descendantsOfType(["comment", "line_comment", "block_comment"], node.startPosition, body?.startPosition ?? node.endPosition)) if (c) sig = sig.replace(c.text, "");
   if (it.props["sig.prefix"]) sig = `${it.props["sig.prefix"]} ${sig}`;

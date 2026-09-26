@@ -14,7 +14,7 @@ test("a branch created after editing on main carries the recording and its decis
     t.bash("git switch -c feature", () => t.sh("git", ["switch", "-q", "-c", "feature"]));
     t.bash("git commit -am x", () => t.commit("x"));
     t.bash("git branch -m renamed", () => t.sh("git", ["branch", "-m", "renamed"]));
-    const a = symbolFinder(t.extract("--against", "main"))("a.ts#var:a");
+    const a = symbolFinder(t.extract("--pr", "main"))("a.ts#var:a");
     assert.deepEqual(a.decisions, ["D1"]);
     assert.equal(a.explained, true);
   } finally {
@@ -218,7 +218,7 @@ test("creating a branch, editing, and committing in one command keeps everything
       t.commit("drop legacy");
     });
     t.u("decide", "--by", "human", "--title", "Drop legacy", "--why", "Dead code", "--for", "a.ts:legacy");
-    const s = symbolFinder(t.extract("--against", "main"))("a.ts#func:legacy");
+    const s = symbolFinder(t.extract("--pr", "main"))("a.ts#func:legacy");
     assert.equal(s.gaps.before, false, JSON.stringify(s.gaps));
     assert.equal(s.explained, true);
   } finally {

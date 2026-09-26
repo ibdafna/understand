@@ -25,7 +25,7 @@ function gitInput(root: string, args: string[], input: string, env?: GitEnv): st
 
 export function repoRoot(cwd: string): string | null {
   try {
-    return execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+    return git(cwd, ["rev-parse", "--show-toplevel"]).trim() || null;
   } catch {
     return null;
   }
@@ -76,7 +76,7 @@ export function branchBornSince(root: string, branch: string, since: number): bo
 
 /**
  * The repo's trunk, first match wins: `git config understand.trunk`; a remote's HEAD (origin first);
- * `init.defaultBranch`; a common name that exists; else the local branch the most others descend from.
+ * `init.defaultBranch`; a common name that exists. Otherwise there's none (set understand.trunk).
  */
 export function trunkBranch(root: string): string | null {
   const tryGit = (args: string[]) => { try { return git(root, args).trim(); } catch { return ""; } };
@@ -90,25 +90,7 @@ export function trunkBranch(root: string): string | null {
   }
   const init = tryGit(["config", "--get", "init.defaultBranch"]);
   if (exists(init)) return init;
-  for (const b of ["main", "master", "trunk", "develop"]) if (exists(b)) return b;
-  // Last resort, only for small repos (it's quadratic and runs in hooks).
-  const branches = tryGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]).split("\n").filter(Boolean);
-  if (branches.length > 12) return null;
-  let best: string | null = null, most = 0;
-  for (const b of branches) {
-    const n = branches.filter((o) => o !== b && isAncestor(root, b, o)).length;
-    if (n > most) { most = n; best = b; }
-  }
-  return best;
-}
-
-function isAncestor(root: string, a: string, b: string): boolean {
-  try {
-    execFileSync("git", ["-C", root, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  return ["main", "master", "trunk", "develop"].find(exists) ?? null;
 }
 
 /** Tree hash of the whole worktree (untracked and uncommitted included, .gitignore respected). */
@@ -126,12 +108,7 @@ export function treeOf(root: string, rev: string, env?: GitEnv): string {
 
 export function readAt(root: string, treeish: string, path: string, env: GitEnv): string | null {
   try {
-    return execFileSync("git", ["-C", root, "cat-file", "blob", `${treeish}:${path}`], {
-      encoding: "utf8",
-      maxBuffer: 512 * 1024 * 1024,
-      env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    return git(root, ["cat-file", "blob", `${treeish}:${path}`], env);
   } catch {
     return null;
   }
@@ -171,7 +148,7 @@ export function changedFiles(root: string, from: string, to: string, env: GitEnv
 
 export function isIgnored(root: string, path: string): boolean {
   try {
-    execFileSync("git", ["-C", root, "check-ignore", "-q", "--", path], { stdio: "ignore" });
+    git(root, ["check-ignore", "-q", "--", path]);
     return true;
   } catch {
     return false;

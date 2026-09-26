@@ -43,7 +43,7 @@ Someone installs the plugin and nothing else. Every agent session keeps a decisi
 - On the page, a comment targets a line range in one symbol's diff (with the lines it quotes), a whole symbol, or a decision. Comments are kept in the browser, per branch, and can be edited or deleted.
 - "Copy all as a prompt" gathers them in reading order, each with where it applies and its quoted code, for the user to paste into any agent. There's deliberately no channel back from the page: the agent answers in the session, and its changes and decisions show up on the next render.
 - A line comment stays beside the code only while the lines it quotes are still there; otherwise it's listed with its quote and marked as changed.
-- Diffs are drawn by `@pierre/diffs` (pinned), bundled with Shiki's JavaScript regex engine and inlined into the page (about 0.6 MB). Syntax grammars are separate: the build compiles each language's into `dist/highlight/`, and a page carries only those for the languages in its diff. Provenance flags are painted onto its lines after each render, as are the reading aids: the gutter numbers only the new file (a removed line is marked, not numbered, so numbers never run backwards), wrapped lines hang under their own indentation and break between tokens, and word highlights that cover most of a line are dropped (they only repeat that the line changed). The build brings every syntax colour of both themes to 4.5:1 against every background it can land on: context, added and removed rows, and the changed-word boxes.
+- Diffs are drawn by `@pierre/diffs` (pinned), bundled with Shiki's JavaScript regex engine and inlined into the page (about 0.6 MB). Syntax grammars are separate: the build compiles each language's into `dist/highlight/`, and a page carries only those for the languages in its diff. Provenance flags are painted onto its lines after each render, as are the reading aids: the gutter numbers only the new file (a removed line is marked, not numbered, so numbers never run backwards), wrapped lines hang under their own indentation and break between tokens, and changed words are marked only on a removed and an added line that are edits of each other (paired by likeness, not position). The build brings every syntax colour of both themes to 4.5:1 against every background it can land on: context, added and removed rows, and the changed-word boxes.
 
 ## Harnesses
 
@@ -64,7 +64,7 @@ A single self-contained HTML file (inline CSS, JS, and data), with the notices o
 - A short name (`run`) is judged ambiguous against the final diff, not against the symbols that existed when the decision was recorded.
 - Two symbols on one physical line share that line's provenance.
 - Sparse checkouts can show files entering the sparse cone as added; Git LFS clean filters write to `.git/lfs` during snapshots.
-- Trunk is detected in order: `git config understand.trunk`, a remote's HEAD, `init.defaultBranch`, a common name (`main`, `master`, `trunk`, `develop`), then (in small repos) the branch the most others descend from.
+- Trunk is detected in order: `git config understand.trunk`, a remote's HEAD, `init.defaultBranch`, a common name (`main`, `master`, `trunk`, `develop`). If none applies, there's no trunk until `understand.trunk` names it.
 - If a PreToolUse hook fails, changes before that tool call can't be separated from the tool's own.
 - Locking relies on POSIX directory renames; Windows isn't supported yet.
 - Renamed files with edits appear as removal + addition.

@@ -3,7 +3,7 @@ import { currentBranch, changedFiles, entryAt, git, readAt, treeOf, trunkBranch,
 import { isLogPath, readLogs } from "../decisionlog.js";
 import type { Home } from "../home.js";
 import { Store, type Claim, type Decision, type Edit } from "../store.js";
-import { align, diffFile, type Row, type Status, type SymChange } from "./diff.js";
+import { align, diffFile, splitLines, type Row, type Status, type SymChange } from "./diff.js";
 import { hlLang, langOf, symbolsOf } from "./symbols.js";
 
 export interface Gaps {
@@ -265,12 +265,6 @@ function modeRows(ch: FileChange, fmt: (sha: string) => string): Row[] {
 
 /* ----------------------------- provenance ----------------------------- */
 
-function splitLines(text: string): string[] {
-  const lines = text.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  return lines;
-}
-
 /** Where a line came from: an unchanged baseline line, or the transition that wrote it (keeping baseline ancestry through moves). */
 /** `at`: the line's number in the version its label's transition wrote (to find the symbol it was in then). */
 type Origin = { base?: number; label?: string; at?: number };
@@ -336,12 +330,7 @@ function track(baseTree: string, startTree: string, edits: Edit[], path: string,
     text = nt;
   };
 
-  if (baseTree !== startTree) step(read(startTree, path), "before");
-  for (const e of edits) {
-    if (!e.files.includes(path)) continue;
-    step(read(e.from, path), "outside");
-    step(read(e.to, path), e.unverified ? "outside" : e.id);
-  }
+  for (const [tree, label] of transitions(baseTree, startTree, edits, path)) step(read(tree, path), label);
   step(finalText, "outside");
 
   const finalLines = splitLines(text);
@@ -364,6 +353,17 @@ function track(baseTree: string, startTree: string, edits: Edit[], path: string,
 }
 
 /**
+ * The trees a path passed through, each with what took it there: recording start ("before"), then per
+ * captured edit the unobserved stretch before it ("outside") and the edit itself (unless unverified).
+ */
+function transitions(baseTree: string, startTree: string, edits: Edit[], path: string): [string, string][] {
+  return [
+    ...(baseTree !== startTree ? [[startTree, "before"] as [string, string]] : []),
+    ...edits.filter((e) => e.files.includes(path)).flatMap((e): [string, string][] => [[e.from, "outside"], [e.to, e.unverified ? "outside" : e.id]]),
+  ];
+}
+
+/**
  * Provenance for changes with no line text (binary, mode, submodule): whoever last changed the part
  * that differs. A mode change is judged by the mode alone, so a content edit doesn't claim it.
  */
@@ -379,12 +379,7 @@ function fileLabels(root: string, env: GitEnv, baseTree: string, startTree: stri
     if (next !== cur) last = label;
     cur = next;
   };
-  if (baseTree !== startTree) step(startTree, "before");
-  for (const e of edits) {
-    if (!e.files.includes(path)) continue;
-    step(e.from, "outside");
-    step(e.to, e.unverified ? "outside" : e.id);
-  }
+  for (const [tree, label] of transitions(baseTree, startTree, edits, path)) step(tree, label);
   step(finalTree, "outside");
   return new Set([last]);
 }
@@ -418,7 +413,7 @@ function detectMoves(changes: Change[]) {
 
 /** Names join their parts with "." or "::" (C++, Rust); decisions may name them either way. */
 const lastPart = (name: string) => name.split(/\.|::/).pop()!;
-const sameName = (a: string, b: string) => a.replace(/::/g, ".") === b.replace(/::/g, ".");
+const dotted = (name: string) => name.replace(/::/g, ".");
 
 /**
  * Does a `--for` spec name this symbol? Files are matched as known paths first, so colons in paths
@@ -430,12 +425,11 @@ function claimKind(spec: string, c: Change, names: Set<string>, unique: (short: 
   for (const file of [c.file, c.movedFrom].filter((f): f is string => !!f)) {
     if (clean === file) return "file";
     if (!clean.startsWith(file + ":")) continue;
-    const symbol = clean.slice(file.length + 1);
+    const symbol = dotted(clean.slice(file.length + 1));
     for (const name of names) {
-      const short = lastPart(name);
       // The whole name, its qualified tail (Store.due for todo::Store::due), or a short name only one symbol has.
-      const tail = symbol.replace(/::/g, ".");
-      if (sameName(symbol, name) || (tail.includes(".") && name.replace(/::/g, ".").endsWith("." + tail)) || (symbol === short && unique(short))) return "symbol";
+      const full = dotted(name);
+      if (full === symbol || (symbol.includes(".") && full.endsWith("." + symbol)) || (symbol === lastPart(name) && unique(symbol))) return "symbol";
     }
   }
   return null;

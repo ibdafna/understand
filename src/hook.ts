@@ -1,12 +1,11 @@
-import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { capture } from "./capture.js";
 import { drain } from "./decide.js";
 import { writeLog } from "./decisionlog.js";
 import { extract } from "./extract/index.js";
-import { branchBornSince, currentBranch, isIgnored, repoRoot } from "./git.js";
-import { Home, understandHome } from "./home.js";
+import { branchBornSince, currentBranch, git, isIgnored, repoRoot } from "./git.js";
+import { Home, realish, understandHome } from "./home.js";
 
 interface Payload {
   hook_event_name?: string;
@@ -192,22 +191,14 @@ function cliNote(): string {
 function stageLog(root: string, log: string | null) {
   if (!log) return;
   try {
-    execFileSync("git", ["-C", root, "add", "--", log], { stdio: "ignore" });
+    git(root, ["add", "--", log]);
   } catch {}
-}
-
-/** Resolve symlinks on both sides (e.g. macOS /var → /private/var) so tool paths match git's root. */
-function real(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    try { return join(realpathSync(dirname(p)), basename(p)); } catch { return p; }
-  }
 }
 
 function relFile(root: string, p: unknown): string | null {
   if (typeof p !== "string" || !p) return null;
-  const rel = relative(real(root), real(isAbsolute(p) ? p : resolve(root, p)));
+  // Symlinks resolved on both sides (macOS /var → /private/var), so tool paths match git's root.
+  const rel = relative(realish(root), realish(isAbsolute(p) ? p : resolve(root, p)));
   if (rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)) return null;
   return rel;
 }

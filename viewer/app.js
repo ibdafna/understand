@@ -27,9 +27,9 @@ const allDec = (s) => [...s.dec, ...s.later];
 /* The decisions that shaped a symbol as it is: one replaced by another that also shaped it is left out. */
 const liveDec = (s) => { const ids = allDec(s); return ids.map((id) => DEC[id]).filter((d) => d && !(d.supersededBy && ids.includes(d.supersededBy))); };
 const unexplained = (s) => !s.explained;
-const attnOf = (s) => (["careful", "skim", "mechanical"].includes(s.attn) ? s.attn : "skim");
-const needsCare = (s) => attnOf(s) === "careful" || unexplained(s);
+const needsCare = (s) => s.attn === "careful" || unexplained(s);
 const counts = (s) => ({ a: s.rows.filter((r) => r.t === "+").length, d: s.rows.filter((r) => r.t === "-").length });
+const sumCounts = (list) => list.reduce((t, s) => { const c = counts(s); return { a: t.a + c.a, d: t.d + c.d }; }, { a: 0, d: 0 });
 const pmHTML = ({ a, d }) => `<span class="num">${a ? `<span class="plus">+${a}</span>` : ""}${a && d ? " " : ""}${d ? `<span class="minus">−${d}</span>` : ""}</span>`;
 
 const storeKey = "understand:" + DATA.branch + ":";
@@ -81,7 +81,6 @@ function setZen(on) {
 const GLYPH = { added: "+", removed: "−", modified: "~", moved: "→" };
 const FLAG_TEXT = { o: "Not made by an observed agent tool (a manual edit or an unobserved program)", b: "Changed before recording started; no reason was captured", u: "No decision names this symbol for the edit that wrote this line" };
 const base = (p) => String(p).split("/").pop();
-const whoHTML = (d) => `<span class="who ${d.who === "human" ? "human" : "agent"}">${d.who === "human" ? "you" : "agent"}</span>`;
 const shortName = (s) => (s.kind === "file" ? base(s.file) : s.name);
 
 /* ---------- comments ----------
@@ -239,7 +238,7 @@ function rowsToPatch(name, rows) {
   return out;
 }
 
-const PROV_CSS = `
+const DIFF_CSS = `
 :host { --diffs-light-bg: var(--panel); --diffs-dark-bg: var(--panel); --diffs-min-number-column-width: 3ch; --diffs-light-addition-color: #0f7546; --diffs-light-deletion-color: #c0262f; }
 [data-prov] { box-shadow: inset 3px 0 0 var(--u-warn, #b54708); }
 [data-line][data-prov]::after { content: "!"; position: absolute; right: 8px; font-weight: 700; color: var(--u-warn, #b54708); }
@@ -290,6 +289,27 @@ function wordMarks(rows) {
     }
   }
   return marks;
+}
+
+/**
+ * A long line wraps the way code reads: it hangs under its own indentation (which stays with the first
+ * word), breaks between tokens (after `(` or `,`, before a call chained on `)`), and never inside a
+ * name, a flag like --due, a date, or `->`. Safe to run again on a line it already did.
+ */
+function wrapLikeCode(line) {
+  const text = line.textContent, lead = /^[ \t]*/.exec(text)[0];
+  const cols = [...lead].reduce((c, ch) => (ch === "\t" ? c + TAB - (c % TAB) : c + 1), 0);
+  line.style.setProperty("--hang", `${cols + 2}ch`);
+  const first = line.querySelector("span");
+  if (lead && first && first.textContent.trim().length < 24) first.style.whiteSpace = "pre";
+  for (const sp of line.querySelectorAll("span")) {
+    if (sp.children.length) continue;
+    const t = sp.textContent, prev = sp.previousSibling;
+    if (text.length > 40 && prev?.nodeName !== "WBR" && ((/^\./.test(t) && /\)$/.test(prev?.textContent ?? "")) || /[(,]\s*$/.test(prev?.textContent ?? ""))) sp.before(document.createElement("wbr"));
+    if (!/\S-\S|--\S|->/.test(t)) continue;
+    if (!/\s/.test(t)) { if (t.length <= 32) sp.style.whiteSpace = "nowrap"; }
+    else sp.innerHTML = esc(t).replace(/(--?\w[\w-]*|\w+(?:-\w+)+|\S*-&gt;\S*)/g, '<span style="white-space:nowrap">$1</span>');
+  }
 }
 
 /** Wrap character ranges of a rendered line in Pierre's changed-word marker. */
@@ -363,32 +383,14 @@ function mount(el) {
       for (const line of node.shadowRoot.querySelectorAll("[data-line]")) {
         const key = { "change-deletion": "d", "change-addition": "a" }[line.dataset.lineType];
         if (key && words.has(key + line.dataset.line) && !line.querySelector("[data-diff-span]")) markWords(line, words.get(key + line.dataset.line));
-        // Hang wrapped text under the line's indentation; keep the indentation with the first word.
-        const lead = /^[ \t]*/.exec(line.textContent)[0];
-        const cols = [...lead].reduce((c, ch) => (ch === "\t" ? c + TAB - (c % TAB) : c + 1), 0);
-        line.style.setProperty("--hang", `${cols + 2}ch`);
-        const first = line.querySelector("span");
-        if (lead && first && first.textContent.trim().length < 24) first.style.whiteSpace = "pre";
-        // A long line breaks between tokens (before . ( :: [, after a comma), not inside a name.
-        if (line.textContent.length > 40)
-          for (const sp of line.querySelectorAll("span")) {
-            if (sp.children.length || sp.previousSibling?.nodeName === "WBR") continue;
-            const prev = sp.previousSibling?.textContent ?? "";
-            if ((/^\./.test(sp.textContent) && /\)$/.test(prev)) || /[(,]\s*$/.test(prev)) sp.before(document.createElement("wbr"));
-          }
-        // A short token like "--due" or 2026-10-01 doesn't break at its hyphens.
-        for (const sp of line.querySelectorAll("span")) {
-          if (sp.children.length || !/\S-\S|--\S|->/.test(sp.textContent)) continue;
-          if (!/\s/.test(sp.textContent)) { if (sp.textContent.length <= 32) sp.style.whiteSpace = "nowrap"; continue; }
-          sp.innerHTML = esc(sp.textContent).replace(/(--?\w[\w-]*|\w+(?:-\w+)+|\S*-&gt;\S*)/g, '<span style="white-space:nowrap">$1</span>');
-        }
+        wrapLikeCode(line);
       }
       for (const r of flagged) {
         const sel = r.t === "+" ? `[data-line-type="change-addition"][data-line="${r.n}"]` : `[data-line-type="change-deletion"][data-line="${r.o}"]`;
         for (const line of node.shadowRoot.querySelectorAll(sel)) { line.setAttribute("data-prov", r.x); line.title = FLAG_TEXT[r.x]; }
       }
     },
-    unsafeCSS: PROV_CSS,
+    unsafeCSS: DIFF_CSS,
   });
   inst.render({ fileDiff, containerWrapper: el, lineAnnotations: lineAnnotations(s) });
   mounted.set(s.id, inst);
@@ -459,9 +461,11 @@ const decRef = (d) => `<button class="dref${state.focus === d.id ? " active" : "
  * order; later cards name it and link back. Decisions replaced by another on the same symbol are left out.
  */
 const firstCard = new Map(); // decision id -> symbol id of the first card that shows it in full
+/** The decisions this card shows in full: those no earlier card (or import row) did. */
+const shownHere = (s) => liveDec(s).filter((d) => { if (!firstCard.has(d.id)) firstCard.set(d.id, s.id); return firstCard.get(d.id) === s.id; });
 function reasonsHTML(s) {
   const decs = liveDec(s);
-  const full = decs.filter((d) => { if (!firstCard.has(d.id)) firstCard.set(d.id, s.id); return firstCard.get(d.id) === s.id; });
+  const full = shownHere(s);
   const [lead, ...also] = decs;
   const home = (d) => (full.includes(d) ? null : firstCard.get(d.id));
   const seeAbove = (d) => { const t = SYM[home(d)]; return t ? `<a class="above" href="#sym-${t.id}" data-jump="${t.id}">Reasons with ${esc(nameIn(t, s))} ↑</a>` : ""; };
@@ -475,9 +479,9 @@ function reasonsHTML(s) {
   const way = (rejected ? `<ul class="rej">${rejected}</ul>` : "") + (s.how ? `<p>${md(s.how)} ${afterTag}</p>` : "");
   const shownRisks = s.risks.filter((r) => !r.from || full.some((d) => d.id === r.from));
   const risks = shownRisks.length ? `<ul class="risks">${shownRisks.map((r) => `<li><span>${md(r.text)} ${r.from ? `<span class="id">${esc(r.from)}</span>` : afterTag}</span></li>`).join("")}</ul>` : "";
-  const attn = attnOf(s) === "careful" ? "Needs care" : attnOf(s) === "mechanical" ? "Mechanical" : "";
+  const attn = s.attn === "careful" ? "Needs care" : s.attn === "mechanical" ? "Mechanical" : "";
   return `<aside class="reasons">
-    ${attn && s.attnWhy && !unexplained(s) ? `<section class="attn ${attnOf(s)}"><h4>${attn}</h4><p>${md(s.attnWhy)}</p></section>` : ""}
+    ${attn && s.attnWhy && !unexplained(s) ? `<section class="attn ${s.attn}"><h4>${attn}</h4><p>${md(s.attnWhy)}</p></section>` : ""}
     ${sec("What it does", `<p>${s.sum ? md(s.sum) : `<span class="unnarrated">Not explained yet.</span>`}</p>`)}
     ${unexplained(s) ? sec("Unexplained", `<p>${esc(gapText(s))}</p>`, "gap") : ""}
     ${sec("Why", why)}
@@ -489,7 +493,7 @@ function reasonsHTML(s) {
 
 function symHTML(s) {
   const sig = s.kind === "file" ? `${base(s.file)} ${s.name}` : s.kind === "other" ? s.name : s.sig || s.name;
-  const pill = unexplained(s) ? `<span class="pill gap">Unexplained</span>` : attnOf(s) === "careful" ? `<span class="pill care" title="${esc(s.attnWhy ?? "")}">Needs care</span>` : attnOf(s) === "mechanical" ? `<span class="pill mech" title="${esc(s.attnWhy ?? "")}">Mechanical</span>` : "";
+  const pill = unexplained(s) ? `<span class="pill gap">Unexplained</span>` : s.attn === "careful" ? `<span class="pill care" title="${esc(s.attnWhy ?? "")}">Needs care</span>` : s.attn === "mechanical" ? `<span class="pill mech" title="${esc(s.attnWhy ?? "")}">Mechanical</span>` : "";
   const n = s.rows.filter((r) => r.t !== "gap").length;
   const collapsed = !state.codeOpen.has(s.id) && (s.status === "moved" || s.status === "removed");
   const code = !s.rows.length
@@ -531,7 +535,7 @@ function importRowHTML(s) {
 
 /* A decision met first on an import (say, which library to use) has its reasons shown there. */
 function impReasons(s) {
-  const own = liveDec(s).filter((d) => { if (!firstCard.has(d.id)) firstCard.set(d.id, s.id); return firstCard.get(d.id) === s.id; });
+  const own = shownHere(s);
   if (!own.length) return "";
   return `<div class="imp-reasons reasons">${own.map((d) => `<div class="imp-dec">${decRef(d)}${d.ctx ? `<p>${md(d.ctx)}</p>` : ""}${d.alts.length ? `<ul class="rej">${d.alts.map(altHTML).join("")}</ul>` : ""}${d.risks.length ? `<ul class="risks">${d.risks.map((r) => `<li><span>${md(r)}</span></li>`).join("")}</ul>` : ""}</div>`).join("")}</div>`;
 }
@@ -554,8 +558,8 @@ function symsHTML(list) {
     if (s.kind !== "import") { out += symHTML(s); i++; continue; }
     let j = i;
     while (j < list.length && list[j].kind === "import" && list[j].file === s.file) j++;
-    const run = list.slice(i, j), total = run.reduce((t, x) => { const c = counts(x); return { a: t.a + c.a, d: t.d + c.d }; }, { a: 0, d: 0 });
-    out += `<section class="sym imports"><div class="sym-head"><span style="width: 24px"></span><span class="sig">Imports</span><span class="path" title="${esc(s.file)}">${esc(base(s.file))}</span>${pmHTML(total)}</div>${run.map(importRowHTML).join("")}</section>`;
+    const run = list.slice(i, j);
+    out += `<section class="sym imports"><div class="sym-head"><span style="width: 24px"></span><span class="sig">Imports</span><span class="path" title="${esc(s.file)}">${esc(base(s.file))}</span>${pmHTML(sumCounts(run))}</div>${run.map(importRowHTML).join("")}</section>`;
     i = j;
   }
   return out;
@@ -582,7 +586,7 @@ function renderMain() {
 function matches(s) {
   const q = state.q.trim().toLowerCase();
   if (q && !`${s.name} ${s.file}`.toLowerCase().includes(q)) return false;
-  if (state.quick === "care") return attnOf(s) === "careful";
+  if (state.quick === "care") return s.attn === "careful";
   if (state.quick === "gap") return unexplained(s);
   if (state.quick === "commented") return commentCount(s) > 0;
   if (state.quick === "unviewed") return !viewed(s);
@@ -623,7 +627,7 @@ function renderSideShell() {
 }
 
 function renderQuick() {
-  const n = { care: DATA.symbols.filter((s) => attnOf(s) === "careful").length, gap: DATA.symbols.filter(unexplained).length, commented: DATA.symbols.filter((s) => commentCount(s) > 0).length, unviewed: DATA.symbols.filter((s) => !viewed(s)).length };
+  const n = { care: DATA.symbols.filter((s) => s.attn === "careful").length, gap: DATA.symbols.filter(unexplained).length, commented: DATA.symbols.filter((s) => commentCount(s) > 0).length, unviewed: DATA.symbols.filter((s) => !viewed(s)).length };
   const b = (k, text, cls = "") => `<button class="${cls}" data-quick="${k}" aria-pressed="${state.quick === k}"${n[k] || state.quick === k ? "" : " disabled"}>${text} ${n[k]}</button>`;
   $("#quick").innerHTML = b("care", "Needs care", "care") + (n.gap ? b("gap", "Unexplained", "gap") : "") + b("commented", "Commented") + b("unviewed", "Not viewed");
 }
@@ -646,21 +650,27 @@ const ELSEWHERE = (() => {
 /** A symbol's name as seen from another card: with its file when the name alone could mean another symbol. */
 const nameIn = (t, from) => shortName(t) + (TWINS.has(t.id) || ELSEWHERE.has(t.id) || shortName(t) === shortName(from) ? ` in ${base(t.file)}` : "");
 
+/* Overloads show their parameters whole (they differ at the end); a long qualified name loses its start, not its member. */
+function treeName(s) {
+  if (TWINS.has(s.id)) return `<span class="t twin">${esc(s.sig ? fromName(s) : shortName(s))}</span>`;
+  return /::|\./.test(shortName(s)) && !shortName(s).includes("(") ? `<span class="t lead"><bdi>${esc(shortName(s))}</bdi></span>` : `<span class="t">${esc(shortName(s))}</span>`;
+}
+
 function treeRow(s) {
   const c = commentCount(s);
-  const marks = `<span class="marks">${unexplained(s) ? `<span class="dot gap" title="Unexplained"></span>` : attnOf(s) === "careful" ? `<span class="dot" title="Needs care"></span>` : ""}${c ? `<span class="cc" title="${plural(c, "comment")}">${c}</span>` : ""}${pmHTML(counts(s))}</span>`;
+  const marks = `<span class="marks">${unexplained(s) ? `<span class="dot gap" title="Unexplained"></span>` : s.attn === "careful" ? `<span class="dot" title="Needs care"></span>` : ""}${c ? `<span class="cc" title="${plural(c, "comment")}">${c}</span>` : ""}${pmHTML(counts(s))}</span>`;
   const lead = viewed(s) ? `<span class="glyph added">${ICON.check}</span>` : `<span class="glyph ${s.status}">${GLYPH[s.status]}</span>`;
-  return `<a class="t-row${viewed(s) ? " viewed" : ""}${state.current === s.id ? " current" : ""}" href="#sym-${s.id}" data-jump="${s.id}">${lead}<span class="nm" title="${esc(s.file + ": " + (s.sig || shortName(s)))}">${(() => { const t = TWINS.has(s.id) && s.sig ? fromName(s) : shortName(s); return TWINS.has(s.id) ? `<span class="t twin">${esc(t)}</span>` : /::|\./.test(t) && !/\(/.test(t) ? `<span class="t lead"><bdi>${esc(t)}</bdi></span>` : `<span class="t">${esc(t)}</span>`; })()}${ELSEWHERE.has(s.id) ? `<span class="in">${esc(base(s.file))}</span>` : ""}</span>${marks}</a>`;
+  return `<a class="t-row${viewed(s) ? " viewed" : ""}${state.current === s.id ? " current" : ""}" href="#sym-${s.id}" data-jump="${s.id}">${lead}<span class="nm" title="${esc(s.file + ": " + (s.sig || shortName(s)))}">${treeName(s)}${ELSEWHERE.has(s.id) ? `<span class="in">${esc(base(s.file))}</span>` : ""}</span>${marks}</a>`;
 }
 
 function renderTree() {
   if (state.order === "decisions") {
     $("#tree").innerHTML = DATA.decisions.length ? DATA.decisions.map((d) => {
-      const n = DATA.symbols.filter((s) => allDec(s).includes(d.id)).length;
+      const n = shaped(d);
       const c = comments.filter((x) => x.text && x.target.kind === "decision" && x.target.decision === d.id).length;
       return `<div class="d-row${state.focus === d.id ? " active" : ""}${d.supersededBy ? " superseded" : ""}" data-dec="${esc(d.id)}" title="${showAll(d)}">
         <div class="d-top"><span class="id">${esc(d.id)}</span><span>${md(d.title)}</span></div>
-        <div class="d-meta">${whoHTML(d)}<span>${plural(n, "symbol")}</span>${d.supersededBy ? `<span>replaced by ${esc(d.supersededBy)}</span>` : ""}${d.mechanical ? "<span>mechanical</span>" : ""}${c ? `<span class="cc">${c}</span>` : ""}<span class="spacer"></span><button class="link quiet" data-comment-dec="${esc(d.id)}">Comment</button></div>
+        <div class="d-meta">${badge(d)}<span>${plural(n, "symbol")}</span>${d.supersededBy ? `<span>replaced by ${esc(d.supersededBy)}</span>` : ""}${d.mechanical ? "<span>mechanical</span>" : ""}${c ? `<span class="cc">${c}</span>` : ""}<span class="spacer"></span><button class="link quiet" data-comment-dec="${esc(d.id)}">Comment</button></div>
       </div>`;
     }).join("") : `<p class="empty">No decisions were recorded.</p>`;
   } else {
@@ -712,10 +722,9 @@ function renderRail() {
 }
 
 function renderTop() {
-  const tot = DATA.symbols.reduce((t, s) => { const c = counts(s); return { a: t.a + c.a, d: t.d + c.d }; }, { a: 0, d: 0 });
   $("#range").innerHTML = `<span>${esc(DATA.branch)}</span><span class="base">${esc(DATA.baseLabel)} → ${esc(DATA.headLabel)}</span>`;
   $("#range").title = `${DATA.branch}: ${DATA.baseLabel} → ${DATA.headLabel}`;
-  $("#totals").innerHTML = `${pmHTML(tot)}<span class="meta-txt">${plural(Object.keys(DATA.files).length, "file")} · ${plural(DATA.symbols.length, "symbol")} · ${plural(DATA.decisions.length, "decision")}</span>`;
+  $("#totals").innerHTML = `${pmHTML(sumCounts(DATA.symbols))}<span class="meta-txt">${plural(Object.keys(DATA.files).length, "file")} · ${plural(DATA.symbols.length, "symbol")} · ${plural(DATA.decisions.length, "decision")}</span>`;
   renderProgress();
   renderCopy();
 }
@@ -736,7 +745,7 @@ function renderCopy() {
 function renderHead() {
   const s = DATA.symbols;
   const human = DATA.decisions.filter((d) => d.who === "human" && !d.supersededBy).length;
-  const gaps = s.filter(unexplained).length, care = s.filter((x) => attnOf(x) === "careful").length;
+  const gaps = s.filter(unexplained).length, care = s.filter((x) => x.attn === "careful").length;
   $("#title").innerHTML = md(DATA.title);
   $("#intent").innerHTML = md(DATA.intent);
   $("#intent").hidden = !DATA.intent;
@@ -757,8 +766,8 @@ function renderFocus() {
   const el = $("#focus"), d = state.focus && DEC[state.focus];
   el.hidden = !d;
   if (!d) return;
-  const n = DATA.symbols.filter((s) => allDec(s).includes(d.id)).length;
-  el.innerHTML = `<div class="d-top"><span class="id">${esc(d.id)}</span><b>${md(d.title)}</b>${whoHTML(d)}<span class="spacer"></span><button class="btn" data-comment-dec="${esc(d.id)}">${ICON.comment}Comment</button><button class="btn" data-clear>Clear <kbd>esc</kbd></button></div>
+  const n = shaped(d);
+  el.innerHTML = `<div class="d-top"><span class="id">${esc(d.id)}</span><b>${md(d.title)}</b>${badge(d)}<span class="spacer"></span><button class="btn" data-comment-dec="${esc(d.id)}">${ICON.comment}Comment</button><button class="btn" data-clear>Clear <kbd>esc</kbd></button></div>
     ${d.ctx ? `<div>${md(d.ctx)}</div>` : ""}
     ${d.alts.length ? `<ul>${d.alts.map((a) => `<li>Rejected: ${md(a)}</li>`).join("")}</ul>` : ""}
     ${d.risks.length ? `<ul>${d.risks.map((r) => `<li>Risk: ${md(r)}</li>`).join("")}</ul>` : ""}

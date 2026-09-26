@@ -22,7 +22,7 @@ export interface SymChange {
   kind: string;
   name: string;
   sig: string;
-  /** The declaration's line: in the new file, or the old one for a removed symbol. */
+  /** Where it starts: a declaration's line, or an other hunk's first changed line (new file, else old). */
   line?: number;
   status: Status;
   rows: Row[];
@@ -34,14 +34,19 @@ export interface SymChange {
 const CONTEXT = 3;
 const FULL_UNDER = 40;
 
+/** A text's lines, without the empty one after a final newline. */
+export function splitLines(text: string): string[] {
+  const lines = text.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
 /** Align two versions of a file line by line. */
 export function align(oldText: string, newText: string): Row[] {
   const rows: Row[] = [];
   let o = 1, n = 1;
   for (const part of diffLines(oldText, newText)) {
-    const lines = part.value.split("\n");
-    if (lines[lines.length - 1] === "") lines.pop();
-    for (const s of lines) {
+    for (const s of splitLines(part.value)) {
       if (part.added) rows.push({ t: "+", n: n++, s });
       else if (part.removed) rows.push({ t: "-", o: o++, s });
       else rows.push({ t: " ", o: o++, n: n++, s });
@@ -59,21 +64,16 @@ export function compress(rows: Row[], context = CONTEXT): Row[] {
     for (let j = Math.max(0, i - context); j <= Math.min(rows.length - 1, i + context); j++) keep[j] = true;
   });
   keep[0] = true;
-  // Hiding a few lines saves nothing and loses the thread; only longer runs become a gap.
-  for (let i = 0; i < rows.length; ) {
-    let j = i;
-    while (j < rows.length && !keep[j] && rows[j].t !== "gap") j++;
-    if (j - i < 4) for (let k = i; k < j; k++) keep[k] = true;
-    i = Math.max(j, i + 1);
-  }
   const out: Row[] = [];
-  let skipped = 0;
+  let skipped: Row[] = [];
+  // Hiding a few lines saves nothing and loses the thread; only longer runs become a gap.
   const flush = () => {
-    if (skipped) out.push({ t: "gap", s: `${skipped} unchanged line${skipped > 1 ? "s" : ""}` });
-    skipped = 0;
+    if (skipped.length >= 4) out.push({ t: "gap", s: `${skipped.length} unchanged lines` });
+    else out.push(...skipped);
+    skipped = [];
   };
   rows.forEach((r, i) => {
-    if (keep[i] || r.t === "gap") { flush(); out.push(r); } else skipped++;
+    if (keep[i] || r.t === "gap") { flush(); out.push(r); } else skipped.push(r);
   });
   flush();
   return out;
@@ -228,9 +228,12 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
     for (let k = 0; k < 2 && to + 1 < rows.length && free(to + 1); k++) to++;
     const hunk = rows.slice(from, to + 1);
     const changed = rows.slice(i, j + 1).filter((r) => r.t !== " ");
-    // Named by the new file's lines when it has any, else the old file's; never a mix.
-    const inNew = changed.some((r) => r.n != null);
-    const nums = changed.map((r) => (inNew ? r.n : r.o)).filter((x): x is number => x != null);
+    // Named by the new file's lines when it has any, else the old file's (never a mix), leaving out
+    // blank lines when there's more (the page doesn't show blank lines at a hunk's edges).
+    const solid = changed.some((r) => r.s.trim()) ? changed.filter((r) => r.s.trim()) : changed;
+    const inNew = solid.some((r) => r.n != null);
+    const nums = solid.map((r) => (inNew ? r.n : r.o)).filter((x): x is number => x != null).sort((a, b) => a - b);
+    const texts = new Set(solid.map((r) => r.s.trim()));
     const first = changed[0];
     const plus = changed.filter((r) => r.t === "+").map((r) => r.s).sort();
     const minus = changed.filter((r) => r.t === "-").map((r) => r.s).sort();
@@ -239,11 +242,14 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
       : plus.length && plus.join("\n") === minus.join("\n")
         ? j === rows.length - 1 && (oldText ?? "").endsWith("\n") !== (newText ?? "").endsWith("\n") ? "end-of-file newline" : "reordered lines"
         : "lines";
+    const [a, z] = [nums[0], nums[nums.length - 1]];
     out.push({
       key: `other@${first.n ?? `o${first.o}`}`,
       kind: "other",
-      name: Math.min(...nums) === Math.max(...nums) ? `${what.replace(/^lines$/, "line")} ${nums[0]}` : `${what} ${Math.min(...nums)}–${Math.max(...nums)}`,
+      // One changed line is named by what it says (`package main`); more, by where they are.
+      name: what === "lines" && texts.size === 1 ? clip([...texts][0]) : a === z ? `${what.replace(/^lines$/, "line")} ${a}` : `${what} ${a}–${z}`,
       sig: "",
+      line: a,
       status: newText == null ? "removed" : oldText == null ? "added" : "modified",
       rows: compress(hunk),
       body: "",
@@ -251,8 +257,10 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
     i = j + 1;
   }
 
-  return out.sort((x, y) => firstLine(x) - firstLine(y));
+  return out.sort((x, y) => (x.line ?? 0) - (y.line ?? 0));
 }
+
+const clip = (t: string) => (t.length > 48 ? t.slice(0, 47) + "…" : t);
 
 function meta(s: Sym) {
   return { key: s.key, kind: s.kind, name: s.name, sig: s.sig, line: s.line };
@@ -270,8 +278,4 @@ function withGaps(rows: Row[]): Row[] {
     if (r.n != null) prevN = r.n;
   }
   return out;
-}
-
-export function firstLine(c: SymChange): number {
-  return c.rows.find((r) => r.n != null)?.n ?? c.rows.find((r) => r.o != null)?.o ?? 0;
 }

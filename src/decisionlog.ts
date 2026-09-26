@@ -1,6 +1,6 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { git } from "./git.js";
 import type { Decision, Store } from "./store.js";
 
 /**
@@ -14,7 +14,7 @@ const COLUMNS = ["id", "recorded", "by", "title", "why", "shaped", "rejected", "
 
 export function sharing(root: string): boolean {
   try {
-    return execFileSync("git", ["-C", root, "config", "--get", "understand.share"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== "false";
+    return git(root, ["config", "--get", "understand.share"]).trim() !== "false";
   } catch {
     return true;
   }

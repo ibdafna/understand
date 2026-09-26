@@ -1,97 +1,23 @@
 // src/cli.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
+import { execFileSync as execFileSync2 } from "node:child_process";
 import { copyFileSync, mkdirSync as mkdirSync6, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname4, join as join8, resolve as resolve3 } from "node:path";
+import { dirname as dirname3, join as join8, resolve as resolve3 } from "node:path";
 
 // src/decide.ts
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync3, rmSync as rmSync2 } from "node:fs";
 import { dirname, join as join4 } from "node:path";
 
 // src/decisionlog.ts
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-var LOG_DIR = ".decisions";
-var COLUMNS = ["id", "recorded", "by", "title", "why", "shaped", "rejected", "risks", "revises", "mechanical"];
-function sharing(root) {
-  try {
-    return execFileSync("git", ["-C", root, "config", "--get", "understand.share"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() !== "false";
-  } catch {
-    return true;
-  }
-}
-function isLogPath(path) {
-  return path === LOG_DIR || path.startsWith(LOG_DIR + "/");
-}
-var cell = (s) => (s ?? "").replace(/[\t\r\n]+/g, " ").trim();
-var list = (xs) => (xs ?? []).map(cell).filter(Boolean).join("; ");
-function writeLog(rec) {
-  const root = rec.home.root;
-  if (!sharing(root)) return null;
-  const c = rec.config();
-  if (!rec.decisions().length) return null;
-  const file2 = join(root, LOG_DIR, c.logFile);
-  const named = /* @__PURE__ */ new Map();
-  for (const l of rec.linkRecords()) named.set(l.decision, [...named.get(l.decision) ?? [], ...l.for]);
-  const rows = rec.decisions().map((d) => [
-    d.id,
-    d.ts.slice(0, 10),
-    d.by === "human" ? "user" : "agent",
-    cell(d.title),
-    cell(d.why),
-    list([...d.for, ...named.get(d.id) ?? []]),
-    list(d.alternatives),
-    list(d.risks),
-    cell(d.supersedes),
-    d.mechanical ? "yes" : ""
-  ].join("	"));
-  mkdirSync(join(root, LOG_DIR), { recursive: true });
-  const tmp = `${file2}.${process.pid}.tmp`;
-  writeFileSync(tmp, [COLUMNS.join("	"), ...rows].join("\n") + "\n");
-  renameSync(tmp, file2);
-  return join(LOG_DIR, c.logFile);
-}
-function readLogs(root) {
-  const dir = join(root, LOG_DIR);
-  if (!existsSync(dir)) return [];
-  const files = readdirSync(dir).filter((f) => f.endsWith(".tsv")).sort();
-  const out = [];
-  files.forEach((f, i) => {
-    const [header2, ...lines] = readFileSync(join(dir, f), "utf8").split("\n").filter((l) => l.trim());
-    const cols = header2.split("	");
-    const at = (row2, name) => row2[cols.indexOf(name)] ?? "";
-    const split = (s) => s.split(/;\s*/).filter(Boolean);
-    const prefix = files.length > 1 ? `${String.fromCharCode(65 + i % 26)}` : "";
-    for (const line of lines) {
-      const row2 = line.split("	");
-      const id = at(row2, "id");
-      if (!/^D\d+$/.test(id)) continue;
-      out.push({
-        id: prefix + id,
-        ts: at(row2, "recorded"),
-        session: null,
-        title: at(row2, "title"),
-        why: at(row2, "why"),
-        by: at(row2, "by") === "user" ? "human" : "agent",
-        alternatives: split(at(row2, "rejected")),
-        risks: split(at(row2, "risks")),
-        ...at(row2, "revises") ? { supersedes: prefix + at(row2, "revises") } : {},
-        ...at(row2, "mechanical") === "yes" ? { mechanical: true } : {},
-        for: split(at(row2, "shaped")),
-        claimable: []
-      });
-    }
-  });
-  return out;
-}
+import { existsSync as existsSync2, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join as join2 } from "node:path";
 
 // src/git.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
-import { existsSync as existsSync2 } from "node:fs";
-import { isAbsolute, join as join2 } from "node:path";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 var EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 function git(root, args, env) {
-  return execFileSync2("git", ["-C", root, ...args], {
+  return execFileSync("git", ["-C", root, ...args], {
     encoding: "utf8",
     maxBuffer: 512 * 1024 * 1024,
     env: env ? { ...process.env, ...env } : process.env,
@@ -99,18 +25,18 @@ function git(root, args, env) {
   });
 }
 function gitInput(root, args, input, env) {
-  return execFileSync2("git", ["-C", root, ...args], { input, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
+  return execFileSync("git", ["-C", root, ...args], { input, encoding: "utf8", env: env ? { ...process.env, ...env } : process.env });
 }
 function repoRoot(cwd) {
   try {
-    return execFileSync2("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+    return git(cwd, ["rev-parse", "--show-toplevel"]).trim() || null;
   } catch {
     return null;
   }
 }
 function commonDir(root) {
   const p = git(root, ["rev-parse", "--git-common-dir"]).trim();
-  return isAbsolute(p) ? p : join2(root, p);
+  return isAbsolute(p) ? p : join(root, p);
 }
 function currentBranch(root) {
   try {
@@ -160,30 +86,11 @@ function trunkBranch(root) {
   }
   const init = tryGit(["config", "--get", "init.defaultBranch"]);
   if (exists(init)) return init;
-  for (const b of ["main", "master", "trunk", "develop"]) if (exists(b)) return b;
-  const branches = tryGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]).split("\n").filter(Boolean);
-  if (branches.length > 12) return null;
-  let best = null, most = 0;
-  for (const b of branches) {
-    const n = branches.filter((o) => o !== b && isAncestor(root, b, o)).length;
-    if (n > most) {
-      most = n;
-      best = b;
-    }
-  }
-  return best;
-}
-function isAncestor(root, a, b) {
-  try {
-    execFileSync2("git", ["-C", root, "merge-base", "--is-ancestor", a, b], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+  return ["main", "master", "trunk", "develop"].find(exists) ?? null;
 }
 function writeWorktreeTree(root, env) {
   git(root, ["add", "-A", "--", "."], env);
-  const tracked = git(root, ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"]).split("\0").filter((p) => p && existsSync2(join2(root, p)));
+  const tracked = git(root, ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"]).split("\0").filter((p) => p && existsSync(join(root, p)));
   if (tracked.length) gitInput(root, ["--literal-pathspecs", "add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"], tracked.join("\0"), env);
   return git(root, ["write-tree"], env).trim();
 }
@@ -192,12 +99,7 @@ function treeOf(root, rev, env) {
 }
 function readAt(root, treeish, path, env) {
   try {
-    return execFileSync2("git", ["-C", root, "cat-file", "blob", `${treeish}:${path}`], {
-      encoding: "utf8",
-      maxBuffer: 512 * 1024 * 1024,
-      env: { ...process.env, ...env },
-      stdio: ["ignore", "pipe", "ignore"]
-    });
+    return git(root, ["cat-file", "blob", `${treeish}:${path}`], env);
   } catch {
     return null;
   }
@@ -224,11 +126,86 @@ function changedFiles(root, from, to, env) {
 }
 function isIgnored(root, path) {
   try {
-    execFileSync2("git", ["-C", root, "check-ignore", "-q", "--", path], { stdio: "ignore" });
+    git(root, ["check-ignore", "-q", "--", path]);
     return true;
   } catch {
     return false;
   }
+}
+
+// src/decisionlog.ts
+var LOG_DIR = ".decisions";
+var COLUMNS = ["id", "recorded", "by", "title", "why", "shaped", "rejected", "risks", "revises", "mechanical"];
+function sharing(root) {
+  try {
+    return git(root, ["config", "--get", "understand.share"]).trim() !== "false";
+  } catch {
+    return true;
+  }
+}
+function isLogPath(path) {
+  return path === LOG_DIR || path.startsWith(LOG_DIR + "/");
+}
+var cell = (s) => (s ?? "").replace(/[\t\r\n]+/g, " ").trim();
+var list = (xs) => (xs ?? []).map(cell).filter(Boolean).join("; ");
+function writeLog(rec) {
+  const root = rec.home.root;
+  if (!sharing(root)) return null;
+  const c = rec.config();
+  if (!rec.decisions().length) return null;
+  const file2 = join2(root, LOG_DIR, c.logFile);
+  const named = /* @__PURE__ */ new Map();
+  for (const l of rec.linkRecords()) named.set(l.decision, [...named.get(l.decision) ?? [], ...l.for]);
+  const rows = rec.decisions().map((d) => [
+    d.id,
+    d.ts.slice(0, 10),
+    d.by === "human" ? "user" : "agent",
+    cell(d.title),
+    cell(d.why),
+    list([...d.for, ...named.get(d.id) ?? []]),
+    list(d.alternatives),
+    list(d.risks),
+    cell(d.supersedes),
+    d.mechanical ? "yes" : ""
+  ].join("	"));
+  mkdirSync(join2(root, LOG_DIR), { recursive: true });
+  const tmp = `${file2}.${process.pid}.tmp`;
+  writeFileSync(tmp, [COLUMNS.join("	"), ...rows].join("\n") + "\n");
+  renameSync(tmp, file2);
+  return join2(LOG_DIR, c.logFile);
+}
+function readLogs(root) {
+  const dir = join2(root, LOG_DIR);
+  if (!existsSync2(dir)) return [];
+  const files = readdirSync(dir).filter((f) => f.endsWith(".tsv")).sort();
+  const out = [];
+  files.forEach((f, i) => {
+    const [header2, ...lines] = readFileSync(join2(dir, f), "utf8").split("\n").filter((l) => l.trim());
+    const cols = header2.split("	");
+    const at = (row2, name) => row2[cols.indexOf(name)] ?? "";
+    const split = (s) => s.split(/;\s*/).filter(Boolean);
+    const prefix = files.length > 1 ? `${String.fromCharCode(65 + i % 26)}` : "";
+    for (const line of lines) {
+      const row2 = line.split("	");
+      const id = at(row2, "id");
+      if (!/^D\d+$/.test(id)) continue;
+      out.push({
+        id: prefix + id,
+        ts: at(row2, "recorded"),
+        session: null,
+        title: at(row2, "title"),
+        why: at(row2, "why"),
+        by: at(row2, "by") === "user" ? "human" : "agent",
+        alternatives: split(at(row2, "rejected")),
+        risks: split(at(row2, "risks")),
+        ...at(row2, "revises") ? { supersedes: prefix + at(row2, "revises") } : {},
+        ...at(row2, "mechanical") === "yes" ? { mechanical: true } : {},
+        for: split(at(row2, "shaped")),
+        claimable: []
+      });
+    }
+  });
+  return out;
 }
 
 // src/capture.ts
@@ -797,13 +774,16 @@ var Store = class {
 // src/extract/diff.ts
 var CONTEXT = 3;
 var FULL_UNDER = 40;
+function splitLines(text2) {
+  const lines = text2.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
 function align(oldText, newText) {
   const rows = [];
   let o = 1, n = 1;
   for (const part of diffLines(oldText, newText)) {
-    const lines = part.value.split("\n");
-    if (lines[lines.length - 1] === "") lines.pop();
-    for (const s of lines) {
+    for (const s of splitLines(part.value)) {
       if (part.added) rows.push({ t: "+", n: n++, s });
       else if (part.removed) rows.push({ t: "-", o: o++, s });
       else rows.push({ t: " ", o: o++, n: n++, s });
@@ -819,23 +799,18 @@ function compress(rows, context2 = CONTEXT) {
     for (let j = Math.max(0, i - context2); j <= Math.min(rows.length - 1, i + context2); j++) keep[j] = true;
   });
   keep[0] = true;
-  for (let i = 0; i < rows.length; ) {
-    let j = i;
-    while (j < rows.length && !keep[j] && rows[j].t !== "gap") j++;
-    if (j - i < 4) for (let k = i; k < j; k++) keep[k] = true;
-    i = Math.max(j, i + 1);
-  }
   const out = [];
-  let skipped = 0;
+  let skipped = [];
   const flush = () => {
-    if (skipped) out.push({ t: "gap", s: `${skipped} unchanged line${skipped > 1 ? "s" : ""}` });
-    skipped = 0;
+    if (skipped.length >= 4) out.push({ t: "gap", s: `${skipped.length} unchanged lines` });
+    else out.push(...skipped);
+    skipped = [];
   };
   rows.forEach((r, i) => {
     if (keep[i] || r.t === "gap") {
       flush();
       out.push(r);
-    } else skipped++;
+    } else skipped.push(r);
   });
   flush();
   return out;
@@ -985,25 +960,31 @@ function diffFile(oldText, newText, oldSyms, newSyms, rows = align(oldText ?? ""
     for (let k = 0; k < 2 && to + 1 < rows.length && free(to + 1); k++) to++;
     const hunk = rows.slice(from, to + 1);
     const changed = rows.slice(i, j + 1).filter((r) => r.t !== " ");
-    const inNew = changed.some((r) => r.n != null);
-    const nums = changed.map((r) => inNew ? r.n : r.o).filter((x) => x != null);
+    const solid = changed.some((r) => r.s.trim()) ? changed.filter((r) => r.s.trim()) : changed;
+    const inNew = solid.some((r) => r.n != null);
+    const nums = solid.map((r) => inNew ? r.n : r.o).filter((x) => x != null).sort((a2, b) => a2 - b);
+    const texts = new Set(solid.map((r) => r.s.trim()));
     const first = changed[0];
     const plus = changed.filter((r) => r.t === "+").map((r) => r.s).sort();
     const minus = changed.filter((r) => r.t === "-").map((r) => r.s).sort();
     const what = changed.every((r) => r.s.trim() === "") ? "whitespace" : plus.length && plus.join("\n") === minus.join("\n") ? j === rows.length - 1 && (oldText ?? "").endsWith("\n") !== (newText ?? "").endsWith("\n") ? "end-of-file newline" : "reordered lines" : "lines";
+    const [a, z] = [nums[0], nums[nums.length - 1]];
     out.push({
       key: `other@${first.n ?? `o${first.o}`}`,
       kind: "other",
-      name: Math.min(...nums) === Math.max(...nums) ? `${what.replace(/^lines$/, "line")} ${nums[0]}` : `${what} ${Math.min(...nums)}\u2013${Math.max(...nums)}`,
+      // One changed line is named by what it says (`package main`); more, by where they are.
+      name: what === "lines" && texts.size === 1 ? clip([...texts][0]) : a === z ? `${what.replace(/^lines$/, "line")} ${a}` : `${what} ${a}\u2013${z}`,
       sig: "",
+      line: a,
       status: newText == null ? "removed" : oldText == null ? "added" : "modified",
       rows: compress(hunk),
       body: ""
     });
     i = j + 1;
   }
-  return out.sort((x, y) => firstLine(x) - firstLine(y));
+  return out.sort((x, y) => (x.line ?? 0) - (y.line ?? 0));
 }
+var clip = (t) => t.length > 48 ? t.slice(0, 47) + "\u2026" : t;
 function meta(s) {
   return { key: s.key, kind: s.kind, name: s.name, sig: s.sig, line: s.line };
 }
@@ -1021,9 +1002,6 @@ function withGaps(rows) {
     if (r.n != null) prevN = r.n;
   }
   return out;
-}
-function firstLine(c) {
-  return c.rows.find((r) => r.n != null)?.n ?? c.rows.find((r) => r.o != null)?.o ?? 0;
 }
 
 // src/extract/symbols.ts
@@ -1124,14 +1102,15 @@ function nameOf(it) {
   return it.cap["name.prefix"] ? `${text(it.cap["name.prefix"][0])} ${own}` : own;
 }
 function keyOf(it) {
-  const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
+  const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(/;$/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
   const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
   const scope = [qualifier(it), it.cap.scope && text(it.cap.scope[0])].filter(Boolean).join(it.sep);
   return (scope ? scope + it.sep : "") + prefix + own;
 }
-function sigOf(it, node = it.node) {
+function sigOf(it) {
+  const node = it.node;
   const body = it.cap.body?.reduce((a, b) => b.startIndex < a.startIndex ? b : a) ?? null;
-  let sig = it.props.sig === "full" ? it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text : header(node, body);
+  let sig = it.props.sig === "full" ? node.text : header(node, body);
   for (const c of node.descendantsOfType(["comment", "line_comment", "block_comment"], node.startPosition, body?.startPosition ?? node.endPosition)) if (c) sig = sig.replace(c.text, "");
   if (it.props["sig.prefix"]) sig = `${it.props["sig.prefix"]} ${sig}`;
   const name = it.cap.name?.length === 1 ? text(it.cap.name[0]) : "";
@@ -1415,11 +1394,6 @@ function modeRows(ch, fmt) {
   if (ch.status !== "D") rows.push({ t: "+", s: fmt(ch.newSha) });
   return rows;
 }
-function splitLines(text2) {
-  const lines = text2.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  return lines;
-}
 function track(baseTree, startTree, edits, path, baseText, finalText, read) {
   let text2 = baseText ?? "";
   const baseLines = splitLines(text2);
@@ -1468,12 +1442,7 @@ function track(baseTree, startTree, edits, path, baseText, finalText, read) {
     lines = out;
     text2 = nt;
   };
-  if (baseTree !== startTree) step(read(startTree, path), "before");
-  for (const e of edits) {
-    if (!e.files.includes(path)) continue;
-    step(read(e.from, path), "outside");
-    step(read(e.to, path), e.unverified ? "outside" : e.id);
-  }
+  for (const [tree, label] of transitions(baseTree, startTree, edits, path)) step(read(tree, path), label);
   step(finalText, "outside");
   const finalLines = splitLines(text2);
   return {
@@ -1491,6 +1460,12 @@ function track(baseTree, startTree, edits, path, baseText, finalText, read) {
     }
   };
 }
+function transitions(baseTree, startTree, edits, path) {
+  return [
+    ...baseTree !== startTree ? [[startTree, "before"]] : [],
+    ...edits.filter((e) => e.files.includes(path)).flatMap((e) => [[e.from, "outside"], [e.to, e.unverified ? "outside" : e.id]])
+  ];
+}
 function fileLabels(root, env, baseTree, startTree, finalTree, edits, path, part) {
   const sha = (tree) => {
     const [mode, , oid] = entryAt(root, tree, path, env).split(" ");
@@ -1503,12 +1478,7 @@ function fileLabels(root, env, baseTree, startTree, finalTree, edits, path, part
     if (next !== cur) last = label;
     cur = next;
   };
-  if (baseTree !== startTree) step(startTree, "before");
-  for (const e of edits) {
-    if (!e.files.includes(path)) continue;
-    step(e.from, "outside");
-    step(e.to, e.unverified ? "outside" : e.id);
-  }
+  for (const [tree, label] of transitions(baseTree, startTree, edits, path)) step(tree, label);
   step(finalTree, "outside");
   return /* @__PURE__ */ new Set([last]);
 }
@@ -1531,17 +1501,16 @@ function detectMoves(changes) {
   }
 }
 var lastPart = (name) => name.split(/\.|::/).pop();
-var sameName = (a, b) => a.replace(/::/g, ".") === b.replace(/::/g, ".");
+var dotted = (name) => name.replace(/::/g, ".");
 function claimKind(spec, c, names, unique) {
   const clean = spec.trim().replace(/^\.\//, "");
   for (const file2 of [c.file, c.movedFrom].filter((f) => !!f)) {
     if (clean === file2) return "file";
     if (!clean.startsWith(file2 + ":")) continue;
-    const symbol = clean.slice(file2.length + 1);
+    const symbol = dotted(clean.slice(file2.length + 1));
     for (const name of names) {
-      const short = lastPart(name);
-      const tail = symbol.replace(/::/g, ".");
-      if (sameName(symbol, name) || tail.includes(".") && name.replace(/::/g, ".").endsWith("." + tail) || symbol === short && unique(short)) return "symbol";
+      const full = dotted(name);
+      if (full === symbol || symbol.includes(".") && full.endsWith("." + symbol) || symbol === lastPart(name) && unique(symbol)) return "symbol";
     }
   }
   return null;
@@ -1758,9 +1727,8 @@ var Home = class _Home {
 };
 
 // src/hook.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync6, realpathSync as realpathSync2 } from "node:fs";
-import { basename as basename3, dirname as dirname3, isAbsolute as isAbsolute3, join as join7, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync5, readFileSync as readFileSync6 } from "node:fs";
+import { isAbsolute as isAbsolute3, join as join7, relative as relative2, resolve as resolve2, sep as sep2 } from "node:path";
 var FILE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"]);
 function toolFiles(root, tool, input) {
   if (tool === "apply_patch") {
@@ -1912,24 +1880,13 @@ In this environment run the CLI as \`${join7(process.env.PLUGIN_ROOT, "bin", "un
 function stageLog(root, log2) {
   if (!log2) return;
   try {
-    execFileSync3("git", ["-C", root, "add", "--", log2], { stdio: "ignore" });
+    git(root, ["add", "--", log2]);
   } catch {
-  }
-}
-function real(p) {
-  try {
-    return realpathSync2(p);
-  } catch {
-    try {
-      return join7(realpathSync2(dirname3(p)), basename3(p));
-    } catch {
-      return p;
-    }
   }
 }
 function relFile(root, p) {
   if (typeof p !== "string" || !p) return null;
-  const rel = relative2(real(root), real(isAbsolute3(p) ? p : resolve2(root, p)));
+  const rel = relative2(realish(root), realish(isAbsolute3(p) ? p : resolve2(root, p)));
   if (rel === ".." || rel.startsWith(".." + sep2) || isAbsolute3(rel)) return null;
   return rel;
 }
@@ -1938,7 +1895,6 @@ function relFile(root, p) {
 import { createHash as createHash2 } from "node:crypto";
 import { existsSync as existsSync7, readFileSync as readFileSync7 } from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-var ATTN2 = /* @__PURE__ */ new Set(["careful", "skim", "mechanical"]);
 function viewerData(x, n) {
   const sessionNo = new Map(x.sessions.map((s, i) => [s, i + 1]));
   const domId = new Map(x.symbols.map((s, i) => [s.id, `s${i}`]));
@@ -1955,7 +1911,7 @@ function viewerData(x, n) {
     });
     const decs = s.decisions.map((d) => decById.get(d)).filter(Boolean);
     const mechanicalOnly = decs.length > 0 && decs.every((d) => d.mechanical);
-    const attn = note?.attention && ATTN2.has(note.attention) ? note.attention : mechanicalOnly ? "mechanical" : "skim";
+    const attn = note?.attention ?? (mechanicalOnly ? "mechanical" : "skim");
     const risks = [
       ...[...decs, ...later.map((d) => decById.get(d))].filter((d, _, all) => !all.some((o) => o.supersedes === d.id)).flatMap((d) => (d.risks ?? []).map((text2) => ({ text: text2, from: d.id }))),
       ...note?.risk ? [{ text: note.risk, from: null }] : []
@@ -1968,8 +1924,8 @@ function viewerData(x, n) {
       key: `${s.id}@${fp}`,
       file: s.file,
       kind: s.kind,
-      name: s.kind === "other" && /^lines? /.test(s.name) ? linesName(rows) ?? s.name : s.name,
-      line: s.line ?? (s.kind === "other" ? changedLines(rows)[0] : rows.find((r) => r.n != null)?.n ?? rows.find((r) => r.o != null)?.o) ?? 0,
+      name: s.name,
+      line: s.line ?? 0,
       sig: s.sig,
       status: s.status,
       moved: s.movedFrom,
@@ -2022,18 +1978,8 @@ function viewerData(x, n) {
 }
 function showable(rows) {
   const segs = [[]];
-  let o, n;
-  for (const r of rows) {
-    const jump = r.n != null && n != null && r.n !== n + 1 || r.o != null && o != null && r.o !== o + 1;
-    if (r.t === "gap" || jump) {
-      segs.push([]);
-      o = n = void 0;
-    }
-    if (r.t !== "gap") segs.at(-1).push(r);
-    if (r.n != null) n = r.n;
-    if (r.o != null) o = r.o;
-  }
-  const blank = (r) => !(r.s ?? "").trim();
+  for (const r of rows) r.t === "gap" ? segs.push([]) : segs.at(-1).push(r);
+  const blank = (r) => !r.s.trim();
   const kept = segs.map((seg) => {
     let a = 0, z = seg.length;
     while (a < z && blank(seg[a])) a++;
@@ -2042,22 +1988,6 @@ function showable(rows) {
   }).filter((seg) => seg.length);
   if (!kept.some((seg) => seg.some((r) => r.t === "+" || r.t === "-"))) return rows;
   return kept.flatMap((seg, i) => i ? [{ t: "gap", s: "" }, ...seg] : seg);
-}
-function changedLines(rows) {
-  const changed = rows.filter((r) => r.t === "+" || r.t === "-");
-  const inNew = changed.some((r) => r.n != null);
-  return changed.map((r) => inNew ? r.n : r.o).filter((x) => x != null).sort((a, b) => a - b);
-}
-function linesName(rows) {
-  const nums = changedLines(rows);
-  if (!nums.length) return null;
-  const texts = new Set(rows.filter((r) => (r.t === "+" || r.t === "-") && r.s.trim()).map((r) => r.s.trim()));
-  if (texts.size === 1) {
-    const t = [...texts][0];
-    return t.length > 48 ? t.slice(0, 47) + "\u2026" : t;
-  }
-  const a = nums[0], z = nums.at(-1);
-  return a === z ? `line ${a}` : `lines ${a}\u2013${z}`;
 }
 function explicitChapters(x, n, domId) {
   const placed = /* @__PURE__ */ new Set();
@@ -2133,7 +2063,7 @@ Control:
 State lives in ${"$"}UNDERSTAND_HOME (default ~/.claude/understand), never inside the repo.
 `;
 var BOOL = /* @__PURE__ */ new Set(["mechanical", "open", "everywhere", "branch", "staged", "uncommitted"]);
-var VALUE = /* @__PURE__ */ new Set(["title", "why", "by", "alt", "for", "risk", "supersedes", "out", "pr", "against", "commits"]);
+var VALUE = /* @__PURE__ */ new Set(["title", "why", "by", "alt", "for", "risk", "supersedes", "out", "pr", "commits"]);
 function parse(argv) {
   const [cmd = "help", ...rest] = argv;
   const flags = {}, args = [];
@@ -2163,7 +2093,7 @@ function fail(msg) {
   process.exit(1);
 }
 function rangeOf(flags) {
-  const pr = one(flags, "pr") ?? one(flags, "against");
+  const pr = one(flags, "pr");
   const picked = [
     ...pr ? [{ kind: "pr", ref: pr }] : [],
     ...flags.branch ? [{ kind: "branch" }] : [],
@@ -2279,7 +2209,7 @@ async function main() {
     case "off":
     case "on": {
       const file2 = flags.everywhere ? join8(understandHome(), "off") : home().path("off");
-      mkdirSync6(dirname4(file2), { recursive: true, mode: 448 });
+      mkdirSync6(dirname3(file2), { recursive: true, mode: 448 });
       if (cmd === "off") writeFileSync3(file2, (/* @__PURE__ */ new Date()).toISOString() + "\n");
       else rmSync3(file2, { force: true });
       if (cmd === "on" && !flags.everywhere && home().isOff()) console.log("Recording is still off here: `understand off --everywhere` (or UNDERSTAND_DISABLE) applies to every repo. Run `understand on --everywhere`.");
@@ -2326,13 +2256,13 @@ Full detail (code and per-line provenance): ${join8(dirOf(src), "extract.json")}
       }
       const outFlag = one(flags, "out");
       const out = outFlag ? resolve3(outFlag) : join8(dirOf(src), "reports", `understand-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}.html`);
-      mkdirSync6(dirname4(out), { recursive: true });
+      mkdirSync6(dirname3(out), { recursive: true });
       writeFileSync3(out, renderHtml(x, n));
       if (!outFlag) copyFileSync(out, join8(dirOf(src), "reports", "latest.html"));
       console.log(out);
       if (flags.open) {
         try {
-          execFileSync4(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open", [out]);
+          execFileSync2(process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open", [out]);
         } catch {
         }
       }

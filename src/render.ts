@@ -4,9 +4,6 @@ import { fileURLToPath } from "node:url";
 import type { Extract } from "./extract/index.js";
 import type { Explanation } from "./explanation.js";
 
-
-const ATTN = new Set(["careful", "skim", "mechanical"]);
-
 /** Shape consumed by viewer/app.js. Keep in sync with the viewer's render code. */
 export function viewerData(x: Extract, n: Explanation | null) {
   const sessionNo = new Map(x.sessions.map((s, i) => [s, i + 1]));
@@ -26,7 +23,7 @@ export function viewerData(x: Extract, n: Explanation | null) {
     });
     const decs = s.decisions.map((d) => decById.get(d)!).filter(Boolean);
     const mechanicalOnly = decs.length > 0 && decs.every((d) => d.mechanical);
-    const attn = note?.attention && ATTN.has(note.attention) ? note.attention : mechanicalOnly ? "mechanical" : "skim";
+    const attn = note?.attention ?? (mechanicalOnly ? "mechanical" : "skim"); // validated by check() before rendering
     // Risks the decisions recorded at the time, then any the explanation found.
     const risks = [
       ...[...decs, ...later.map((d) => decById.get(d)!)]
@@ -43,8 +40,8 @@ export function viewerData(x: Extract, n: Explanation | null) {
       key: `${s.id}@${fp}`,
       file: s.file,
       kind: s.kind,
-      name: s.kind === "other" && /^lines? /.test(s.name) ? linesName(rows) ?? s.name : s.name,
-      line: s.line ?? (s.kind === "other" ? changedLines(rows)[0] : rows.find((r) => r.n != null)?.n ?? rows.find((r) => r.o != null)?.o) ?? 0,
+      name: s.name,
+      line: s.line ?? 0,
       sig: s.sig,
       status: s.status,
       moved: s.movedFrom,
@@ -99,21 +96,13 @@ export function viewerData(x: Extract, n: Explanation | null) {
 }
 
 /**
- * The rows worth showing. A symbol's own lines can skip (a container's lines skip its members), so a
- * jump in line numbers is a gap. A stretch that is only blank lines, and blank lines at either end,
- * aren't worth showing; keep them when they're all there is.
+ * The rows worth showing: blank lines at either end of a stretch (between gaps), and stretches of only
+ * blank lines, aren't; they're kept when they're all there is.
  */
-function showable<R extends { t: string; s?: string; o?: number; n?: number }>(rows: R[]): R[] {
+function showable<R extends { t: string; s: string }>(rows: R[]): R[] {
   const segs: R[][] = [[]];
-  let o: number | undefined, n: number | undefined;
-  for (const r of rows) {
-    const jump = (r.n != null && n != null && r.n !== n + 1) || (r.o != null && o != null && r.o !== o + 1);
-    if (r.t === "gap" || jump) { segs.push([]); o = n = undefined; } // the gap stands for what both sides skipped
-    if (r.t !== "gap") segs.at(-1)!.push(r);
-    if (r.n != null) n = r.n;
-    if (r.o != null) o = r.o;
-  }
-  const blank = (r: R) => !(r.s ?? "").trim();
+  for (const r of rows) r.t === "gap" ? segs.push([]) : segs.at(-1)!.push(r);
+  const blank = (r: R) => !r.s.trim();
   const kept = segs
     .map((seg) => {
       let a = 0, z = seg.length;
@@ -124,23 +113,6 @@ function showable<R extends { t: string; s?: string; o?: number; n?: number }>(r
     .filter((seg) => seg.length);
   if (!kept.some((seg) => seg.some((r) => r.t === "+" || r.t === "-"))) return rows;
   return kept.flatMap((seg, i) => (i ? [{ t: "gap", s: "" } as R, ...seg] : seg));
-}
-
-/** The changed lines' numbers, sorted: in the new file when any are there, else in the old. */
-function changedLines(rows: { t: string; o?: number; n?: number }[]): number[] {
-  const changed = rows.filter((r) => r.t === "+" || r.t === "-");
-  const inNew = changed.some((r) => r.n != null);
-  return changed.map((r) => (inNew ? r.n : r.o)).filter((x): x is number => x != null).sort((a, b) => a - b);
-}
-
-/** A name for changes outside any symbol, from the lines actually shown: the line itself when it's one, else "lines 3–9". */
-function linesName(rows: { t: string; o?: number; n?: number; s: string }[]): string | null {
-  const nums = changedLines(rows);
-  if (!nums.length) return null;
-  const texts = new Set(rows.filter((r) => (r.t === "+" || r.t === "-") && r.s.trim()).map((r) => r.s.trim()));
-  if (texts.size === 1) { const t = [...texts][0]; return t.length > 48 ? t.slice(0, 47) + "…" : t; }
-  const a = nums[0], z = nums.at(-1)!;
-  return a === z ? `line ${a}` : `lines ${a}–${z}`;
 }
 
 type Chapter = { title: string; sum: string; syms: string[] };

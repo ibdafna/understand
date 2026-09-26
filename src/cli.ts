@@ -44,7 +44,7 @@ State lives in ${"$"}UNDERSTAND_HOME (default ~/.claude/understand), never insid
 `;
 
 const BOOL = new Set(["mechanical", "open", "everywhere", "branch", "staged", "uncommitted"]);
-const VALUE = new Set(["title", "why", "by", "alt", "for", "risk", "supersedes", "out", "pr", "against", "commits"]);
+const VALUE = new Set(["title", "why", "by", "alt", "for", "risk", "supersedes", "out", "pr", "commits"]);
 type Flags = Record<string, string[]>;
 
 function parse(argv: string[]): { cmd: string; args: string[]; flags: Flags } {
@@ -75,7 +75,7 @@ function fail(msg: string): never {
 }
 
 function rangeOf(flags: Flags): Range {
-  const pr = one(flags, "pr") ?? one(flags, "against");
+  const pr = one(flags, "pr");
   const picked: Range[] = [
     ...(pr ? [{ kind: "pr" as const, ref: pr }] : []),
     ...(flags.branch ? [{ kind: "branch" as const }] : []),

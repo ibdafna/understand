@@ -7,7 +7,7 @@ import { commonDir, currentBranch, git, headCommit, trunkBranch, writeWorktreeTr
 import { Store } from "./store.js";
 
 /** Resolve symlinks (e.g. macOS /var → /private/var) even for a path that doesn't exist yet. */
-function realish(p: string): string {
+export function realish(p: string): string {
   try {
     return realpathSync(p);
   } catch {
