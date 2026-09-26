@@ -1,4 +1,5 @@
 import { FileDiff, parsePatchFiles } from "@pierre/diffs";
+import { diffWordsWithSpace } from "diff";
 
 /* global DATA: the page's data, a global declared before this script by render.ts */
 
@@ -6,7 +7,9 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 /* prose from the explanation: escaped, with `code` spans */
-const md = (s) => esc(s).replace(/`([^`]+)`/g, '<code class="ic">$1</code>');
+const md = (s) => esc(s)
+  .replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
+  .replace(/(^|[\s(+])(--?\w[\w-]*|\w+(?:-\w+){2,}|\w*\d\w*(?:-\w+)+)(?=[\s.,;:)]|$)/g, '$1<span class="nw">$2</span>'); // --due, YYYY-MM-DD stay whole
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const ICON = {
   comment: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
@@ -21,6 +24,8 @@ const REF = Object.fromEntries(DATA.symbols.map((s) => [s.ref, s]));
 const ORDER = Object.fromEntries(DATA.symbols.map((s, i) => [s.ref, i]));
 const DEC = Object.fromEntries(DATA.decisions.map((d) => [d.id, d]));
 const allDec = (s) => [...s.dec, ...s.later];
+/* The decisions that shaped a symbol as it is: one replaced by another that also shaped it is left out. */
+const liveDec = (s) => { const ids = allDec(s); return ids.map((id) => DEC[id]).filter((d) => d && !(d.supersededBy && ids.includes(d.supersededBy))); };
 const unexplained = (s) => !s.explained;
 const attnOf = (s) => (["careful", "skim", "mechanical"].includes(s.attn) ? s.attn : "skim");
 const needsCare = (s) => attnOf(s) === "careful" || unexplained(s);
@@ -35,7 +40,7 @@ const store = {
 const state = {
   order: ["story", "files", "decisions"].includes(store.get("view")) ? store.get("view") : "story",
   q: "",
-  quick: null, // "care" | "commented" | "unviewed"
+  quick: null, // "care" | "gap" | "commented" | "unviewed"
   focus: null,
   viewed: new Set(store.get("reviewed", []).filter((k) => DATA.symbols.some((s) => s.key === k))),
   fold: new Set(), // folded by hand
@@ -76,7 +81,6 @@ function setZen(on) {
 const GLYPH = { added: "+", removed: "−", modified: "~", moved: "→" };
 const FLAG_TEXT = { o: "Not made by an observed agent tool (a manual edit or an unobserved program)", b: "Changed before recording started; no reason was captured", u: "No decision names this symbol for the edit that wrote this line" };
 const base = (p) => String(p).split("/").pop();
-const firstNo = (s) => { const r = s.rows.find((r) => r.t !== "gap"); return r ? (r.n ?? r.o ?? 0) : 0; };
 const whoHTML = (d) => `<span class="who ${d.who === "human" ? "human" : "agent"}">${d.who === "human" ? "you" : "agent"}</span>`;
 const shortName = (s) => (s.kind === "file" ? base(s.file) : s.name);
 
@@ -221,21 +225,94 @@ function rowsToPatch(name, rows) {
   const segs = [[]];
   for (const r of rows) r.t === "gap" ? segs.push([]) : segs[segs.length - 1].push(r);
   let out = `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n`;
+  let o = 0, n = 0; // the last line each side has reached
   for (const seg of segs) {
     if (!seg.length) continue;
     const olds = seg.filter((r) => r.t !== "+"), news = seg.filter((r) => r.t !== "-");
-    const oStart = olds.length ? olds[0].o : (seg.find((r) => r.o)?.o ?? 0);
-    const nStart = news.length ? news[0].n : (seg.find((r) => r.n)?.n ?? 0);
+    // A side with no lines here is empty at the line before (the patch format's `+N,0`).
+    const oStart = olds.length ? olds[0].o : o, nStart = news.length ? news[0].n : n;
     out += `@@ -${oStart},${olds.length} +${nStart},${news.length} @@\n`;
     for (const r of seg) out += (r.t === " " ? " " : r.t) + r.s + "\n";
+    if (olds.length) o = olds.at(-1).o;
+    if (news.length) n = news.at(-1).n;
   }
   return out;
 }
 
 const PROV_CSS = `
+:host { --diffs-light-bg: var(--panel); --diffs-dark-bg: var(--panel); --diffs-min-number-column-width: 3ch; --diffs-light-addition-color: #0f7546; --diffs-light-deletion-color: #c0262f; }
 [data-prov] { box-shadow: inset 3px 0 0 var(--u-warn, #b54708); }
 [data-line][data-prov]::after { content: "!"; position: absolute; right: 8px; font-weight: 700; color: var(--u-warn, #b54708); }
+/* One column of numbers, the new file's: a removed line has none there. */
+[data-column-number][data-line-type="change-deletion"] [data-line-number-content] { visibility: hidden; }
+/* A wrapped line continues under its own indentation, so it doesn't read as a new line. */
+[data-line] { padding-inline-start: calc(2ch + var(--hang, 0ch)); text-indent: calc(-1 * var(--hang, 0ch)); }
+/* Skipped lines. */
+[data-separator="simple"] { min-height: 12px; background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--dim) 45%, transparent) 0 1px, transparent 1px 6px); }
 `;
+const TAB = 2; // Pierre's tab-size
+
+/**
+ * The changed words of removed and added lines that are edits of each other. Pierre pairs lines by
+ * position; here each removed line pairs with the most alike added line after the last pair in its
+ * block, and lines less than half alike aren't paired: their colour already says they changed.
+ */
+function wordMarks(rows) {
+  const marks = new Map(), size = (t) => t.replace(/\s/g, "").length;
+  const trim = (line, a, b) => { while (a < b && /\s/.test(line[a])) a++; while (b > a && /\s/.test(line[b - 1])) b--; return a < b ? [[a, b]] : []; };
+  for (let i = 0; i < rows.length; ) {
+    const block = [];
+    while (rows[i]?.t === "-" || rows[i]?.t === "+") block.push(rows[i++]);
+    if (!block.length) { i++; continue; }
+    const dels = block.filter((r) => r.t === "-"), adds = block.filter((r) => r.t === "+");
+    let from = 0;
+    for (const d of dels) {
+      let best = null, score = 0.5, at = -1;
+      for (let j = from; j < adds.length; j++) {
+        const parts = diffWordsWithSpace(d.s, adds[j].s);
+        const same = parts.filter((p) => !p.added && !p.removed).reduce((n, p) => n + size(p.value), 0) / Math.max(size(d.s), size(adds[j].s), 1);
+        if (same > score) [best, score, at] = [parts, same, j];
+      }
+      if (!best) continue;
+      from = at + 1;
+      const dr = [], ar = [];
+      let od = 0, oa = 0;
+      for (const p of best) {
+        if (p.removed) { dr.push(...trim(d.s, od, od + p.value.length)); od += p.value.length; }
+        else if (p.added) { ar.push(...trim(adds[at].s, oa, oa + p.value.length)); oa += p.value.length; }
+        else { od += p.value.length; oa += p.value.length; }
+      }
+      // Marks with only spaces (or a stray character or two the word diff happened to match) between
+      // them read as one change: ", due" rather than "," and "due".
+      const join = (line, rs) => rs.reduce((out, r) => { const last = out.at(-1); if (last && line.slice(last[1], r[0]).trim().length <= 2) last[1] = r[1]; else out.push([...r]); return out; }, []);
+      if (dr.length) marks.set(`d${d.o}`, join(d.s, dr));
+      if (ar.length) marks.set(`a${adds[at].n}`, join(adds[at].s, ar));
+    }
+  }
+  return marks;
+}
+
+/** Wrap character ranges of a rendered line in Pierre's changed-word marker. */
+function markWords(line, ranges) {
+  const walk = document.createTreeWalker(line, NodeFilter.SHOW_TEXT), nodes = [];
+  for (let n; (n = walk.nextNode()); ) nodes.push(n);
+  let pos = 0;
+  for (const node of nodes) {
+    const start = pos;
+    pos += node.length;
+    for (const [a, b] of [...ranges].reverse()) { // from the end, so the offsets stay valid as the text splits
+      const x = Math.max(a, start), y = Math.min(b, pos);
+      if (x >= y) continue;
+      const mid = node.splitText(x - start);
+      mid.splitText(y - x);
+      const mark = document.createElement("span");
+      mark.setAttribute("data-diff-span", "");
+      mid.replaceWith(mark);
+      mark.append(mid);
+    }
+  }
+}
+
 const mounted = new Map(); // symbol id -> FileDiff
 
 const lineComments = (s) => comments.filter((c) => c.target.kind === "lines" && c.target.symbol === s.ref && anchored(c));
@@ -257,12 +334,14 @@ function mount(el) {
   const lang = DATA.files[s.file]?.lang;
   fileDiff.lang = globalThis.UNDERSTAND_LANGS?.[lang] ? lang : "text";
   const flagged = s.rows.filter((r) => r.x && FLAG_TEXT[r.x]);
+  const words = wordMarks(s.rows);
   const inst = new FileDiff({
     theme: { dark: "pierre-dark", light: "pierre-light" },
     themeType: themeNow(),
     diffStyle: "unified",
+    overflow: "wrap",
     hunkSeparators: "simple",
-    lineDiffType: "word",
+    lineDiffType: "none", // changed words are marked below, on lines that are edits of each other
     disableFileHeader: true,
     enableLineSelection: true,
     enableGutterUtility: true,
@@ -281,6 +360,29 @@ function mount(el) {
     },
     onPostRender(node, _i, phase) {
       if (phase === "unmount" || !node.shadowRoot) return;
+      for (const line of node.shadowRoot.querySelectorAll("[data-line]")) {
+        const key = { "change-deletion": "d", "change-addition": "a" }[line.dataset.lineType];
+        if (key && words.has(key + line.dataset.line) && !line.querySelector("[data-diff-span]")) markWords(line, words.get(key + line.dataset.line));
+        // Hang wrapped text under the line's indentation; keep the indentation with the first word.
+        const lead = /^[ \t]*/.exec(line.textContent)[0];
+        const cols = [...lead].reduce((c, ch) => (ch === "\t" ? c + TAB - (c % TAB) : c + 1), 0);
+        line.style.setProperty("--hang", `${cols + 2}ch`);
+        const first = line.querySelector("span");
+        if (lead && first && first.textContent.trim().length < 24) first.style.whiteSpace = "pre";
+        // A long line breaks between tokens (before . ( :: [, after a comma), not inside a name.
+        if (line.textContent.length > 40)
+          for (const sp of line.querySelectorAll("span")) {
+            if (sp.children.length || sp.previousSibling?.nodeName === "WBR") continue;
+            const prev = sp.previousSibling?.textContent ?? "";
+            if ((/^\./.test(sp.textContent) && /\)$/.test(prev)) || /[(,]\s*$/.test(prev)) sp.before(document.createElement("wbr"));
+          }
+        // A short token like "--due" or 2026-10-01 doesn't break at its hyphens.
+        for (const sp of line.querySelectorAll("span")) {
+          if (sp.children.length || !/\S-\S|--\S|->/.test(sp.textContent)) continue;
+          if (!/\s/.test(sp.textContent)) { if (sp.textContent.length <= 32) sp.style.whiteSpace = "nowrap"; continue; }
+          sp.innerHTML = esc(sp.textContent).replace(/(--?\w[\w-]*|\w+(?:-\w+)+|\S*-&gt;\S*)/g, '<span style="white-space:nowrap">$1</span>');
+        }
+      }
       for (const r of flagged) {
         const sel = r.t === "+" ? `[data-line-type="change-addition"][data-line="${r.n}"]` : `[data-line-type="change-deletion"][data-line="${r.o}"]`;
         for (const line of node.shadowRoot.querySelectorAll(sel)) { line.setAttribute("data-prov", r.x); line.title = FLAG_TEXT[r.x]; }
@@ -293,20 +395,44 @@ function mount(el) {
   el.style.minHeight = "";
 }
 
+/* Short code sticks beside a taller reasons panel; code taller than the screen scrolls as usual. */
+const fits = new ResizeObserver((entries) => {
+  for (const e of entries) {
+    const col = e.target, reasons = col.nextElementSibling;
+    col.classList.toggle("stick", !!reasons && col.offsetHeight < reasons.offsetHeight && col.offsetHeight < innerHeight - 140);
+  }
+});
+
+/* A signature that wraps is only as wide as its longest line, so file:line sits right after it. */
+const heads = new ResizeObserver((entries) => {
+  for (const e of entries) {
+    const sig = e.target.querySelector(".sig");
+    if (!sig) continue;
+    sig.style.width = "";
+    const r = document.createRange();
+    r.selectNodeContents(sig);
+    const boxes = [...r.getClientRects()];
+    if (new Set(boxes.map((b) => Math.round(b.top))).size < 2) continue;
+    sig.style.width = `${Math.ceil(Math.max(...boxes.map((b) => b.right)) - Math.min(...boxes.map((b) => b.left))) + 1}px`;
+  }
+});
+
 const near = new IntersectionObserver((entries) => {
   for (const e of entries) if (e.isIntersecting) { near.unobserve(e.target); mount(e.target); }
 }, { rootMargin: "1200px 0px" });
 function observeDiffs(root = document) {
   for (const el of $$(".code[data-diff]", root)) if (!mounted.has(el.dataset.diff)) near.observe(el);
+  for (const col of $$(".code-col", root)) fits.observe(col);
+  for (const h of $$("article.sym > .sym-head", root)) heads.observe(h);
 }
 
 /* ---------- symbols ---------- */
 function chipHTML(id) {
   const d = DEC[id];
   if (!d) return "";
-  return `<button class="chip${state.focus === id ? " active" : ""}" data-dec="${esc(id)}" title="${esc(d.title)}. ${showAll(d)}">${whoHTML(d)}<span class="id">${esc(id)}</span><span class="ct">${esc(d.title)}</span></button>`;
+  return `<button class="chip${state.focus === id ? " active" : ""}" data-dec="${esc(id)}" title="${esc(d.title)}. ${showAll(d)}">${badge(d)}<span class="id">${esc(id)}</span><span class="ct">${esc(d.title)}</span></button>`;
 }
-const chipsHTML = (s) => allDec(s).map(chipHTML).join("");
+const chipsHTML = (s) => liveDec(s).map((d) => chipHTML(d.id)).join("");
 
 function gapText(s) {
   const parts = [];
@@ -319,7 +445,7 @@ function gapText(s) {
 const afterTag = `<span class="after" title="Not recorded while coding; written when the change was explained">written afterwards</span>`;
 /* "option: why not", as recorded with --alt */
 function altHTML(a) {
-  const i = a.indexOf(":");
+  const i = a.search(/:\s/);
   return `<li>${i > 0 ? `<b>${md(a.slice(0, i))}</b><span>${md(a.slice(i + 1).trim())}</span>` : `<span>${md(a)}</span>`}</li>`;
 }
 const badge = (d) => `<span class="badge ${d.who === "human" ? "human" : "agent"}">${d.who === "human" ? "You" : "Agent"}</span>`;
@@ -328,19 +454,30 @@ const showAll = (d) => `Show all ${plural(shaped(d), "change")} ${esc(d.id)} sha
 const decRef = (d) => `<button class="dref${state.focus === d.id ? " active" : ""}" data-dec="${esc(d.id)}" title="${showAll(d)}">${badge(d)}<span class="t">${md(d.title)}</span><span class="id">${esc(d.id)}</span><span class="hint"><span class="h-show">${showAll(d)} →</span><span class="h-on">Showing its changes · click to clear</span></span></button>`;
 
 /* Beside the code: what it does, why, what was rejected, and the risks, from the decisions first. */
+/*
+ * A decision's full reasons (why, rejected, risks) show on the first card it shaped, in reading
+ * order; later cards name it and link back. Decisions replaced by another on the same symbol are left out.
+ */
+const firstCard = new Map(); // decision id -> symbol id of the first card that shows it in full
 function reasonsHTML(s) {
-  const decs = allDec(s).map((id) => DEC[id]).filter(Boolean);
+  const decs = liveDec(s);
+  const full = decs.filter((d) => { if (!firstCard.has(d.id)) firstCard.set(d.id, s.id); return firstCard.get(d.id) === s.id; });
   const [lead, ...also] = decs;
+  const home = (d) => (full.includes(d) ? null : firstCard.get(d.id));
+  const seeAbove = (d) => { const t = SYM[home(d)]; return t ? `<a class="above" href="#sym-${t.id}" data-jump="${t.id}">Reasons with ${esc(nameIn(t, s))} ↑</a>` : ""; };
   const sec = (label, body, cls = "") => (body ? `<section class="${cls}"><h4>${label}</h4>${body}</section>` : "");
   const why = [
-    lead ? `${decRef(lead)}${lead.ctx ? `<p>${md(lead.ctx)}</p>` : ""}` : "",
+    lead ? `${decRef(lead)}${full.includes(lead) && lead.ctx ? `<p>${md(lead.ctx)}</p>` : seeAbove(lead)}` : "",
     s.why ? `<p>${md(s.why)} ${afterTag}</p>` : "",
-    also.length ? `<div class="also"><span class="sub">Also shaped by</span>${also.map(decRef).join("")}</div>` : "",
+    also.length ? `<div class="also"><span class="sub">Also shaped by</span>${also.map((d, i) => decRef(d) + (full.includes(d) ? (d.ctx ? `<p>${md(d.ctx)}</p>` : "") : home(d) === home(also[i + 1] ?? {}) ? "" : seeAbove(d))).join("")}</div>` : "",
   ].join("");
-  const rejected = decs.flatMap((d) => d.alts.map(altHTML)).join("");
+  const rejected = full.flatMap((d) => d.alts.map(altHTML)).join("");
   const way = (rejected ? `<ul class="rej">${rejected}</ul>` : "") + (s.how ? `<p>${md(s.how)} ${afterTag}</p>` : "");
-  const risks = s.risks.length ? `<ul class="risks">${s.risks.map((r) => `<li><span>${md(r.text)} ${r.from ? `<span class="id">${esc(r.from)}</span>` : afterTag}</span></li>`).join("")}</ul>` : "";
+  const shownRisks = s.risks.filter((r) => !r.from || full.some((d) => d.id === r.from));
+  const risks = shownRisks.length ? `<ul class="risks">${shownRisks.map((r) => `<li><span>${md(r.text)} ${r.from ? `<span class="id">${esc(r.from)}</span>` : afterTag}</span></li>`).join("")}</ul>` : "";
+  const attn = attnOf(s) === "careful" ? "Needs care" : attnOf(s) === "mechanical" ? "Mechanical" : "";
   return `<aside class="reasons">
+    ${attn && s.attnWhy && !unexplained(s) ? `<section class="attn ${attnOf(s)}"><h4>${attn}</h4><p>${md(s.attnWhy)}</p></section>` : ""}
     ${sec("What it does", `<p>${s.sum ? md(s.sum) : `<span class="unnarrated">Not explained yet.</span>`}</p>`)}
     ${unexplained(s) ? sec("Unexplained", `<p>${esc(gapText(s))}</p>`, "gap") : ""}
     ${sec("Why", why)}
@@ -351,23 +488,22 @@ function reasonsHTML(s) {
 }
 
 function symHTML(s) {
-  const sig = s.kind === "file" ? `${base(s.file)} (${s.name})` : s.kind === "other" ? s.name : s.sig || s.name;
-  const reason = s.attnWhy ? `<span>· ${esc(s.attnWhy)}</span>` : "";
-  const pill = unexplained(s) ? `<span class="pill gap">Unexplained</span>` : attnOf(s) === "careful" ? `<span class="pill care">Needs care${reason}</span>` : attnOf(s) === "mechanical" ? `<span class="pill mech">Mechanical${reason}</span>` : "";
+  const sig = s.kind === "file" ? `${base(s.file)} ${s.name}` : s.kind === "other" ? s.name : s.sig || s.name;
+  const pill = unexplained(s) ? `<span class="pill gap">Unexplained</span>` : attnOf(s) === "careful" ? `<span class="pill care" title="${esc(s.attnWhy ?? "")}">Needs care</span>` : attnOf(s) === "mechanical" ? `<span class="pill mech" title="${esc(s.attnWhy ?? "")}">Mechanical</span>` : "";
   const n = s.rows.filter((r) => r.t !== "gap").length;
   const collapsed = !state.codeOpen.has(s.id) && (s.status === "moved" || s.status === "removed");
   const code = !s.rows.length
     ? `<div class="collapsed-bar">${esc(DATA.files[s.file]?.note ?? "No line content")}</div>`
     : collapsed
-      ? `<button class="collapsed-bar" data-code="${s.id}">Show ${plural(n, "line")} · ${s.status === "moved" ? "body unchanged" : "deleted"}</button>`
+      ? `<button class="collapsed-bar" data-code="${s.id}">${ICON.chevron}Show the ${plural(n, s.status === "moved" ? "unchanged line" : "deleted line")}</button>`
       : `<div class="code" data-diff="${s.id}" style="min-height:${Math.min(s.rows.length, 400) * 20}px"></div>`;
   const cls = ["sym", folded(s) ? "folded" : "", state.current === s.id ? "current" : ""].join(" ");
   return `<article class="${cls}" id="sym-${s.id}" data-id="${s.id}" tabindex="-1">
     <div class="sym-head">
       <button class="chev" data-fold="${s.id}" aria-label="Fold" aria-expanded="${!folded(s)}">${ICON.chevron}</button>
       <span class="glyph ${s.status}" title="${s.status}">${GLYPH[s.status]}</span>
-      <code class="sig" title="${esc(sig)}">${esc(sig)}</code>
-      <span class="path">${esc(s.file)}:${esc(firstNo(s))}</span>
+      <code class="sig" title="${esc(sig)}">${esc(sig).replace(/-&gt;|=&gt;/g, '<span class="nw">$&</span>').replace(/([(,]\s*)([^(),<]{1,40}?)(?=[,)])/g, '$1<span class="nw">$2</span>')}</code>
+      ${s.kind === "file" ? "" : s.status === "removed" ? `<span class="path" title="${esc(s.file)}, was at line ${esc(s.line)}">${esc(base(s.file))}</span>` : `<span class="path" title="${esc(s.file)}">${esc(base(s.file))}:${esc(s.line)}</span>`}
       ${pmHTML(counts(s))}
       ${s.moved ? `<span class="tag">moved from ${esc(s.moved)}</span>` : ""}
       ${s.note ? `<span class="tag warn">${esc(s.note)}</span>` : ""}
@@ -385,11 +521,19 @@ function importRowHTML(s) {
   const cls = ["imp", state.current === s.id ? "current" : ""].join(" ");
   return `<div class="${cls}" id="sym-${s.id}" data-id="${s.id}" tabindex="-1">
     <span class="glyph ${s.status}">${GLYPH[s.status]}</span>
-    <span class="imp-code">${(changed.length ? changed : [{ t: "", s: s.name }]).map((r) => `<code class="${r.t === "-" ? "minus" : r.t === "+" ? "plus" : ""}">${esc(r.s.trim())}</code>`).join("")}</span>
-    <span class="sum">${unexplained(s) ? `<span class="pill gap">Unexplained</span> ` : ""}${s.sum ? md(s.sum) : `<span class="unnarrated">Not explained yet.</span>`}</span>
-    <span class="acts">${chipsHTML(s)}<button class="link quiet" data-comment="${s.id}">Comment</button><label class="btn view" style="height: 24px" title="Mark viewed (x)"><input type="checkbox" data-rev="${s.id}"${viewed(s) ? " checked" : ""}><span class="off">Mark viewed</span><span class="on">Viewed</span></label></span>
+    <span class="imp-code">${(changed.length ? changed : [{ t: "", s: s.name }]).map((r) => `<code class="${r.t === "-" ? "minus" : r.t === "+" ? "plus" : ""}">${esc(r.s.trim()).replace(/\./g, ".<wbr>")}</code>`).join("")}</span>
+    <span class="sum">${s.sum ? md(s.sum) : `<span class="unnarrated">Not explained yet.</span>`}</span>
+    <span class="acts">${unexplained(s) ? `<span class="pill gap">Unexplained</span>` : chipsHTML(s)}<button class="btn small icon" data-comment="${s.id}" title="Comment on this import (c)" aria-label="Comment">${ICON.comment}</button><label class="btn view" style="height: 24px" title="Mark viewed (x)"><input type="checkbox" data-rev="${s.id}"${viewed(s) ? " checked" : ""}><span class="off">Mark viewed</span><span class="on">Viewed</span></label></span>
+    ${impReasons(s)}
     <div class="cmts" data-cmts="${s.id}">${symComments(s)}</div>
   </div>`;
+}
+
+/* A decision met first on an import (say, which library to use) has its reasons shown there. */
+function impReasons(s) {
+  const own = liveDec(s).filter((d) => { if (!firstCard.has(d.id)) firstCard.set(d.id, s.id); return firstCard.get(d.id) === s.id; });
+  if (!own.length) return "";
+  return `<div class="imp-reasons reasons">${own.map((d) => `<div class="imp-dec">${decRef(d)}${d.ctx ? `<p>${md(d.ctx)}</p>` : ""}${d.alts.length ? `<ul class="rej">${d.alts.map(altHTML).join("")}</ul>` : ""}${d.risks.length ? `<ul class="risks">${d.risks.map((r) => `<li><span>${md(r)}</span></li>`).join("")}</ul>` : ""}</div>`).join("")}</div>`;
 }
 
 function groups() {
@@ -398,7 +542,7 @@ function groups() {
   }
   return Object.keys(DATA.files).sort().map((f) => ({
     num: "", title: f, sum: null, file: true,
-    syms: DATA.symbols.filter((s) => s.file === f).sort((a, b) => firstNo(a) - firstNo(b)),
+    syms: DATA.symbols.filter((s) => s.file === f).sort((a, b) => a.line - b.line),
   })).filter((g) => g.syms.length);
 }
 
@@ -411,13 +555,14 @@ function symsHTML(list) {
     let j = i;
     while (j < list.length && list[j].kind === "import" && list[j].file === s.file) j++;
     const run = list.slice(i, j), total = run.reduce((t, x) => { const c = counts(x); return { a: t.a + c.a, d: t.d + c.d }; }, { a: 0, d: 0 });
-    out += `<section class="sym imports"><div class="sym-head"><span style="width: 24px"></span><span class="sig">Imports</span><span class="path">${esc(s.file)}</span>${pmHTML(total)}</div>${run.map(importRowHTML).join("")}</section>`;
+    out += `<section class="sym imports"><div class="sym-head"><span style="width: 24px"></span><span class="sig">Imports</span><span class="path" title="${esc(s.file)}">${esc(base(s.file))}</span>${pmHTML(total)}</div>${run.map(importRowHTML).join("")}</section>`;
     i = j;
   }
   return out;
 }
 
 function renderMain() {
+  firstCard.clear();
   for (const inst of mounted.values()) inst.cleanUp();
   mounted.clear();
   near.disconnect();
@@ -437,7 +582,8 @@ function renderMain() {
 function matches(s) {
   const q = state.q.trim().toLowerCase();
   if (q && !`${s.name} ${s.file}`.toLowerCase().includes(q)) return false;
-  if (state.quick === "care") return needsCare(s);
+  if (state.quick === "care") return attnOf(s) === "careful";
+  if (state.quick === "gap") return unexplained(s);
   if (state.quick === "commented") return commentCount(s) > 0;
   if (state.quick === "unviewed") return !viewed(s);
   return true;
@@ -477,16 +623,34 @@ function renderSideShell() {
 }
 
 function renderQuick() {
-  const n = { care: DATA.symbols.filter(needsCare).length, commented: DATA.symbols.filter((s) => commentCount(s) > 0).length, unviewed: DATA.symbols.filter((s) => !viewed(s)).length };
+  const n = { care: DATA.symbols.filter((s) => attnOf(s) === "careful").length, gap: DATA.symbols.filter(unexplained).length, commented: DATA.symbols.filter((s) => commentCount(s) > 0).length, unviewed: DATA.symbols.filter((s) => !viewed(s)).length };
   const b = (k, text, cls = "") => `<button class="${cls}" data-quick="${k}" aria-pressed="${state.quick === k}"${n[k] || state.quick === k ? "" : " disabled"}>${text} ${n[k]}</button>`;
-  $("#quick").innerHTML = b("care", "Needs care", "care") + b("commented", "Commented") + b("unviewed", "Not viewed");
+  $("#quick").innerHTML = b("care", "Needs care", "care") + (n.gap ? b("gap", "Unexplained", "gap") : "") + b("commented", "Commented") + b("unviewed", "Not viewed");
 }
+
+/* Symbols sharing a name within a file (overloads, prototype and definition) are told apart by signature. */
+const TWINS = (() => {
+  const seen = new Map();
+  for (const s of DATA.symbols) { const k = s.file + "\0" + shortName(s); seen.set(k, (seen.get(k) ?? 0) + 1); }
+  return new Set(DATA.symbols.filter((s) => seen.get(s.file + "\0" + shortName(s)) > 1).map((s) => s.id));
+})();
+/* An overload's signature from its own name on: `add(String title, String due)`, not `public Todo add(Strin…`. */
+const fromName = (s) => { const last = shortName(s).split(/::|\./).at(-1), i = s.sig.indexOf(last + "("); return i > 0 ? s.sig.slice(i) : s.sig; };
+/* A name that also appears in another file shows its file. */
+const ELSEWHERE = (() => {
+  const files = new Map();
+  for (const s of DATA.symbols) files.set(shortName(s), new Set([...(files.get(shortName(s)) ?? []), s.file]));
+  return new Set(DATA.symbols.filter((s) => files.get(shortName(s)).size > 1).map((s) => s.id));
+})();
+
+/** A symbol's name as seen from another card: with its file when the name alone could mean another symbol. */
+const nameIn = (t, from) => shortName(t) + (TWINS.has(t.id) || ELSEWHERE.has(t.id) || shortName(t) === shortName(from) ? ` in ${base(t.file)}` : "");
 
 function treeRow(s) {
   const c = commentCount(s);
   const marks = `<span class="marks">${unexplained(s) ? `<span class="dot gap" title="Unexplained"></span>` : attnOf(s) === "careful" ? `<span class="dot" title="Needs care"></span>` : ""}${c ? `<span class="cc" title="${plural(c, "comment")}">${c}</span>` : ""}${pmHTML(counts(s))}</span>`;
   const lead = viewed(s) ? `<span class="glyph added">${ICON.check}</span>` : `<span class="glyph ${s.status}">${GLYPH[s.status]}</span>`;
-  return `<a class="t-row${viewed(s) ? " viewed" : ""}${state.current === s.id ? " current" : ""}" href="#sym-${s.id}" data-jump="${s.id}">${lead}<span class="nm">${esc(shortName(s))}</span>${marks}</a>`;
+  return `<a class="t-row${viewed(s) ? " viewed" : ""}${state.current === s.id ? " current" : ""}" href="#sym-${s.id}" data-jump="${s.id}">${lead}<span class="nm" title="${esc(s.file + ": " + (s.sig || shortName(s)))}">${(() => { const t = TWINS.has(s.id) && s.sig ? fromName(s) : shortName(s); return TWINS.has(s.id) ? `<span class="t twin">${esc(t)}</span>` : /::|\./.test(t) && !/\(/.test(t) ? `<span class="t lead"><bdi>${esc(t)}</bdi></span>` : `<span class="t">${esc(t)}</span>`; })()}${ELSEWHERE.has(s.id) ? `<span class="in">${esc(base(s.file))}</span>` : ""}</span>${marks}</a>`;
 }
 
 function renderTree() {
@@ -529,8 +693,8 @@ function renderRail() {
   const why = (s) => (unexplained(s) ? "Unexplained" : s.attnWhy || (needsCare(s) ? "Needs care" : ""));
   const nextCard = next
     ? `<div class="next">
-        <span class="k">${needsCare(next) ? `Next · ${careLeft.length} ${careLeft.length === 1 ? "change needs" : "changes need"} care` : `Next · ${total - seen} not viewed`}</span>
-        <b class="mono">${esc(shortName(next))}</b>
+        <span class="k">${needsCare(next) ? `Next · ${[careLeft.filter((x) => !unexplained(x)).length, careLeft.filter(unexplained).length].map((k, i) => (k ? `${k} ${i ? "unexplained" : k === 1 ? "needs care" : "need care"}` : "")).filter(Boolean).join(" · ")}` : `Next · ${total - seen} not viewed`}</span>
+        <b class="mono">${esc(nameIn(next, {}))}</b>
         ${why(next) ? `<span class="why${needsCare(next) ? " care" : ""}">${esc(why(next))}</span>` : ""}
         <button class="btn primary" data-jump="${next.id}">Review it <kbd>n</kbd></button>
       </div>`
@@ -540,7 +704,7 @@ function renderRail() {
   $("#rail").innerHTML = `
     <div class="rail-body">
       ${nextCard}
-      ${later.length ? `<h3>Also needs care</h3><div class="r-care">${later.map((s) => `<a href="#sym-${s.id}" data-jump="${s.id}"><span class="mono">${esc(shortName(s))}</span><span>${esc(why(s))}</span></a>`).join("")}</div>` : ""}
+      ${later.length ? `<h3>Also needs care</h3><div class="r-care">${later.map((s) => `<a href="#sym-${s.id}" data-jump="${s.id}"><span class="mono">${esc(nameIn(s, {}))}</span><span>${esc(why(s))}</span></a>`).join("")}</div>` : ""}
       <h3>Your comments${n ? ` · ${n}` : ""}</h3>
       ${list.length ? list.map(item).join("") : `<p class="empty" style="padding: 0">Click <b>+</b> beside a line (drag it to cover several), or Comment on a symbol or decision.</p>`}
     </div>
@@ -571,13 +735,13 @@ function renderCopy() {
 
 function renderHead() {
   const s = DATA.symbols;
-  const human = DATA.decisions.filter((d) => d.who === "human").length;
+  const human = DATA.decisions.filter((d) => d.who === "human" && !d.supersededBy).length;
   const gaps = s.filter(unexplained).length, care = s.filter((x) => attnOf(x) === "careful").length;
   $("#title").innerHTML = md(DATA.title);
   $("#intent").innerHTML = md(DATA.intent);
   $("#intent").hidden = !DATA.intent;
   $("#meta").innerHTML = [
-    `<span>${plural(DATA.decisions.length, "decision")}${human ? `, ${human} yours` : ""}</span>`,
+    `<span>${plural(DATA.decisions.length, "decision")}${human ? `, ${human} made by you` : ""}</span>`,
     care ? `<span class="care">${care} need care</span>` : "",
     gaps ? `<span class="gap">${plural(gaps, "symbol")} unexplained</span>` : s.length ? `<span class="ok">Every change explained</span>` : "",
     DATA.sessions ? `<span>${plural(DATA.sessions, "session")}</span>` : "",
@@ -630,7 +794,8 @@ function setFocus(id) {
   if (state.focus) $$("#chapters [data-id]:not(.dim):not(.hidden)")[0]?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function setCurrent(id, scroll = true) {
+/* The symbol the keys act on. Keyboard moves ring it; scrolling only follows along in the tree. */
+function setCurrent(id, scroll = true, ring = true) {
   if (!id) return;
   state.current = id;
   $$("#chapters .current").forEach((e) => e.classList.remove("current"));
@@ -638,7 +803,7 @@ function setCurrent(id, scroll = true) {
   $(`#tree .t-row[data-jump="${id}"]`)?.classList.add("current");
   const el = $("#sym-" + id);
   if (!el) return;
-  el.classList.add("current");
+  if (ring) el.classList.add("current");
   if (scroll) el.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -742,11 +907,15 @@ let spyTimer;
 window.addEventListener("scroll", () => {
   clearTimeout(spyTimer);
   spyTimer = setTimeout(() => {
-    let cur = null;
-    for (const el of $$("#chapters [data-id]:not(.hidden)")) { if (el.getBoundingClientRect().top <= 140) cur = el.dataset.id; else break; }
+    const all = $$("#chapters [data-id]:not(.hidden)");
+    let cur = all[0]?.dataset.id ?? null;
+    for (const el of all) { if (el.getBoundingClientRect().top <= 140) cur = el.dataset.id; else break; }
+    if (innerHeight + scrollY >= document.body.scrollHeight - 4) cur = all.at(-1)?.dataset.id ?? cur; // the end of the page
     if (!cur || cur === state.current) return;
-    setCurrent(cur, false); // the keys act on what you're reading
-    $(`#tree .t-row[data-jump="${cur}"]`)?.scrollIntoView({ block: "nearest" });
+    setCurrent(cur, false, false); // the keys act on what you're reading
+    const row = $(`#tree .t-row[data-jump="${cur}"]`);
+    row?.scrollIntoView({ block: "nearest" });
+    if (row?.previousElementSibling?.classList.contains("t-group")) row.previousElementSibling.scrollIntoView({ block: "nearest" }); // with its chapter heading
   }, 60);
 }, { passive: true });
 

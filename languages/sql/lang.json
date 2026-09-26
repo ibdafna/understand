@@ -1,0 +1,6 @@
+{
+  "extensions": [
+    "sql"
+  ],
+  "highlight": "sql"
+}

@@ -21,6 +21,8 @@ export interface ExSymbol {
   kind: string;
   name: string;
   sig: string;
+  /** The declaration's line (after doc comments), when the change is a symbol. */
+  line?: number;
   status: Status;
   movedFrom?: string;
   note?: string;
@@ -129,7 +131,8 @@ export async function extract(src: Store | Home, range: Range = { kind: "recordi
     if (oldText === newText && ch.status === "M") continue; // mode-only change, already listed
 
     const special = ch.oldMode === "120000" || ch.newMode === "120000" ? "symlink" : LFS.test(oldText ?? "") || LFS.test(newText ?? "") ? "Git LFS pointer; content not shown" : null;
-    const lang = special ? null : langOf(ch.path);
+    files[ch.path].lang = hlLang(ch.path, newText ?? oldText);
+    const lang = special ? null : langOf(ch.path, newText ?? oldText);
     let oldSyms = null, newSyms = null;
     if (lang) {
       try {
@@ -176,12 +179,13 @@ export async function extract(src: Store | Home, range: Range = { kind: "recordi
   // Short names (`run`) only identify a symbol when no other changed symbol in the file shares them.
   const shortCount = new Map<string, number>();
   for (const c of changes) {
-    const k = `${c.file}:${c.name.split(".").pop()}`;
+    const k = `${c.file}:${lastPart(c.name)}`;
     shortCount.set(k, (shortCount.get(k) ?? 0) + 1);
   }
   const unique = (c: Change) => (short: string) => (shortCount.get(`${c.file}:${short}`) ?? 0) <= 1;
   const symbols: ExSymbol[] = changes.map((c) => ({
     id: `${c.file}#${c.key}`, file: c.file, kind: c.kind, name: c.name, sig: c.sig, status: c.status,
+    ...(c.line ? { line: c.line } : {}),
     ...(c.movedFrom ? { movedFrom: c.movedFrom } : {}),
     ...(c.note ? { note: c.note } : {}),
     rows: c.rows,
@@ -396,8 +400,8 @@ function detectMoves(changes: Change[]) {
   const removed = changes.filter((c) => c.status === "removed" && movable(c));
   const added = changes.filter((c) => c.status === "added" && movable(c));
   for (const add of added) {
-    const short = add.name.split(".").pop();
-    const same = (c: Change) => c.body === add.body && c.name.split(".").pop() === short;
+    const short = lastPart(add.name);
+    const same = (c: Change) => c.body === add.body && lastPart(c.name) === short;
     const cands = removed.filter(same);
     if (cands.length !== 1 || added.filter(same).length !== 1) continue;
     const r = cands[0];
@@ -412,6 +416,10 @@ function detectMoves(changes: Change[]) {
 
 /* ----------------------------- attribution ----------------------------- */
 
+/** Names join their parts with "." or "::" (C++, Rust); decisions may name them either way. */
+const lastPart = (name: string) => name.split(/\.|::/).pop()!;
+const sameName = (a: string, b: string) => a.replace(/::/g, ".") === b.replace(/::/g, ".");
+
 /**
  * Does a `--for` spec name this symbol? Files are matched as known paths first, so colons in paths
  * and in symbol names (`a.ts:node:fs`) both work. `names` are the symbol's names: now, and when the
@@ -424,8 +432,10 @@ function claimKind(spec: string, c: Change, names: Set<string>, unique: (short: 
     if (!clean.startsWith(file + ":")) continue;
     const symbol = clean.slice(file.length + 1);
     for (const name of names) {
-      const short = name.split(".").pop()!;
-      if (symbol === name || (symbol === short && unique(short))) return "symbol";
+      const short = lastPart(name);
+      // The whole name, its qualified tail (Store.due for todo::Store::due), or a short name only one symbol has.
+      const tail = symbol.replace(/::/g, ".");
+      if (sameName(symbol, name) || (tail.includes(".") && name.replace(/::/g, ".").endsWith("." + tail)) || (symbol === short && unique(short))) return "symbol";
     }
   }
   return null;
@@ -437,13 +447,13 @@ type NamesThen = Map<string, Map<number, string[]>>;
 async function namesAtTime(changes: Change[], byId: Map<string, Edit>, read: (t: string, p: string) => string | null): Promise<NamesThen> {
   const out: NamesThen = new Map();
   for (const c of changes) {
-    const lang = langOf(c.file);
-    if (!lang) continue;
     for (const r of c.rows) {
       if (r.t !== "+" || !r.p || !r.pa || !byId.has(r.p)) continue;
       const key = `${r.p}:${c.file}`;
       if (out.has(key)) continue;
       const text = read(byId.get(r.p)!.to, c.file);
+      const lang = langOf(c.file, text);
+      if (!lang) continue;
       const byLine = new Map<number, string[]>();
       if (text != null) {
         try {

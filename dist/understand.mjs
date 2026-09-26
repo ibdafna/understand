@@ -704,6 +704,23 @@ function tokenize(value, options) {
   return retLines;
 }
 
+// node_modules/diff/libesm/diff/array.js
+var ArrayDiff = class extends Diff {
+  tokenize(value) {
+    return value.slice();
+  }
+  join(value) {
+    return value;
+  }
+  removeEmpty(value) {
+    return value;
+  }
+};
+var arrayDiff = new ArrayDiff();
+function diffArrays(oldArr, newArr, options) {
+  return arrayDiff.diff(oldArr, newArr, options);
+}
+
 // src/store.ts
 import { join as join5 } from "node:path";
 var Store = class {
@@ -802,6 +819,12 @@ function compress(rows, context2 = CONTEXT) {
     for (let j = Math.max(0, i - context2); j <= Math.min(rows.length - 1, i + context2); j++) keep[j] = true;
   });
   keep[0] = true;
+  for (let i = 0; i < rows.length; ) {
+    let j = i;
+    while (j < rows.length && !keep[j] && rows[j].t !== "gap") j++;
+    if (j - i < 4) for (let k = i; k < j; k++) keep[k] = true;
+    i = Math.max(j, i + 1);
+  }
   const out = [];
   let skipped = 0;
   const flush = () => {
@@ -839,6 +862,39 @@ function diffFile(oldText, newText, oldSyms, newSyms, rows = align(oldText ?? ""
     });
     pending.push(p);
   };
+  const side = (r, t) => {
+    const copy = t === "+" ? { t, n: r.n, s: r.s } : { t, o: r.o, s: r.s };
+    at.set(copy, at.get(r));
+    return copy;
+  };
+  const realign = (raw) => {
+    const o = raw.filter((r) => r.t !== "+"), n = raw.filter((r) => r.t !== "-");
+    const out2 = [];
+    let i2 = 0, j = 0;
+    for (const part of diffArrays(o.map((r) => r.s), n.map((r) => r.s))) {
+      for (let k = 0; k < part.value.length; k++) {
+        if (part.removed) {
+          const r2 = o[i2++];
+          out2.push(r2.t === "-" ? r2 : side(r2, "-"));
+          continue;
+        }
+        if (part.added) {
+          const r2 = n[j++];
+          out2.push(r2.t === "+" ? r2 : side(r2, "+"));
+          continue;
+        }
+        const a = o[i2++], b = n[j++];
+        if (a === b) {
+          out2.push(a);
+          continue;
+        }
+        const r = { t: " ", o: a.o, n: b.n, s: b.s };
+        at.set(r, at.get(b));
+        out2.push(r);
+      }
+    }
+    return out2;
+  };
   const status = /* @__PURE__ */ new Map();
   const group = (syms) => {
     const m = /* @__PURE__ */ new Map();
@@ -858,17 +914,27 @@ function diffFile(oldText, newText, oldSyms, newSyms, rows = align(oldText ?? ""
     while (oList.length && nList.length) {
       const a = oList.shift(), b = nList.shift();
       const ownO = new Set(a.own), ownN = new Set(b.own);
-      const raw = rows.filter((r) => r.t === "-" && ownO.has(r.o) || r.t === "+" && ownN.has(r.n) || r.t === " " && (ownO.has(r.o) || ownN.has(r.n)));
+      let moved = false;
+      const raw = rows.flatMap((r) => {
+        if (r.t === "-") return ownO.has(r.o) ? [r] : [];
+        if (r.t === "+") return ownN.has(r.n) ? [r] : [];
+        if (r.t !== " ") return [];
+        const o = ownO.has(r.o), n = ownN.has(r.n);
+        if (o !== n) moved = true;
+        return o && n ? [r] : o ? [side(r, "-")] : n ? [side(r, "+")] : [];
+      });
       const note = a.iota != null && b.iota != null && a.iota !== b.iota ? `implicit iota value moved from position ${a.iota} to ${b.iota}` : void 0;
-      claim({ ...meta(b), status: "modified", raw, body: b.cmp, ...note ? { note } : {} });
+      const p = { ...meta(b), status: "modified", raw, body: b.cmp, ...note ? { note } : {} };
+      claim(p);
+      if (moved) p.raw = realign(raw);
     }
     for (const b of nList) {
       status.set(b.key, "added");
-      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x) => !!x && x.t !== "-"), body: b.cmp });
+      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x) => !!x && x.t !== "-").map((r) => r.t === " " ? side(r, "+") : r), body: b.cmp });
     }
     for (const a of oList) {
       status.set(a.key, "removed");
-      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x) => !!x && x.t !== "+"), body: a.cmp });
+      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x) => !!x && x.t !== "+").map((r) => r.t === " " ? side(r, "-") : r), body: a.cmp });
     }
   }
   const attach = (r, to) => {
@@ -907,13 +973,20 @@ function diffFile(oldText, newText, oldSyms, newSyms, rows = align(oldText ?? ""
       continue;
     }
     let j = i;
-    while (j + 1 < rows.length && (loose[j + 1] || rows[j + 1].t === " " && j + 2 < rows.length && loose[j + 2])) j++;
+    for (; ; ) {
+      let k = j + 1;
+      while (k < rows.length && !loose[k] && rows[k].t === " " && k - j <= 5) k++;
+      if (k < rows.length && loose[k] && k - j <= 5) j = k;
+      else break;
+    }
+    const free = (x) => rows[x].t === " " && !owner.has(rows[x]);
     let from = i, to = j;
-    for (let k = 0; k < 2 && from > 0 && rows[from - 1].t === " "; k++) from--;
-    for (let k = 0; k < 2 && to + 1 < rows.length && rows[to + 1].t === " "; k++) to++;
+    for (let k = 0; k < 2 && from > 0 && free(from - 1); k++) from--;
+    for (let k = 0; k < 2 && to + 1 < rows.length && free(to + 1); k++) to++;
     const hunk = rows.slice(from, to + 1);
     const changed = rows.slice(i, j + 1).filter((r) => r.t !== " ");
-    const nums = hunk.map((r) => r.n ?? r.o).filter((x) => x != null);
+    const inNew = changed.some((r) => r.n != null);
+    const nums = changed.map((r) => inNew ? r.n : r.o).filter((x) => x != null);
     const first = changed[0];
     const plus = changed.filter((r) => r.t === "+").map((r) => r.s).sort();
     const minus = changed.filter((r) => r.t === "-").map((r) => r.s).sort();
@@ -921,7 +994,7 @@ function diffFile(oldText, newText, oldSyms, newSyms, rows = align(oldText ?? ""
     out.push({
       key: `other@${first.n ?? `o${first.o}`}`,
       kind: "other",
-      name: `${what} ${Math.min(...nums)}\u2013${Math.max(...nums)}`,
+      name: Math.min(...nums) === Math.max(...nums) ? `${what.replace(/^lines$/, "line")} ${nums[0]}` : `${what} ${Math.min(...nums)}\u2013${Math.max(...nums)}`,
       sig: "",
       status: newText == null ? "removed" : oldText == null ? "added" : "modified",
       rows: compress(hunk),
@@ -932,14 +1005,17 @@ function diffFile(oldText, newText, oldSyms, newSyms, rows = align(oldText ?? ""
   return out.sort((x, y) => firstLine(x) - firstLine(y));
 }
 function meta(s) {
-  return { key: s.key, kind: s.kind, name: s.name, sig: s.sig };
+  return { key: s.key, kind: s.kind, name: s.name, sig: s.sig, line: s.line };
 }
 function withGaps(rows) {
   const out = [];
   let prevO, prevN;
   for (const r of rows) {
     const jump = r.o != null && prevO != null && r.o > prevO + 1 || r.n != null && prevN != null && r.n > prevN + 1;
-    if (jump) out.push({ t: "gap", s: "members shown separately" });
+    if (jump) {
+      out.push({ t: "gap", s: "members shown separately" });
+      prevO = prevN = void 0;
+    }
     out.push(r);
     if (r.o != null) prevO = r.o;
     if (r.n != null) prevN = r.n;
@@ -947,8 +1023,7 @@ function withGaps(rows) {
   return out;
 }
 function firstLine(c) {
-  const r = c.rows.find((r2) => r2.t !== "gap");
-  return r?.n ?? r?.o ?? 0;
+  return c.rows.find((r) => r.n != null)?.n ?? c.rows.find((r) => r.o != null)?.o ?? 0;
 }
 
 // src/extract/symbols.ts
@@ -959,20 +1034,20 @@ import { fileURLToPath } from "node:url";
 var langDir = fileURLToPath(new URL("./languages/", import.meta.url));
 var defs = null;
 function languages() {
-  if (!defs) {
-    defs = /* @__PURE__ */ new Map();
-    for (const id of readdirSync2(langDir)) {
-      const def = { id, ...JSON.parse(readFileSync5(`${langDir}${id}/lang.json`, "utf8")) };
-      for (const ext of def.extensions) defs.set(ext, def);
-    }
-  }
-  return defs;
+  return defs ??= readdirSync2(langDir).map((id) => ({ id, ...JSON.parse(readFileSync5(`${langDir}${id}/lang.json`, "utf8")) }));
 }
-function langOf(path) {
-  return languages().get(path.split(".").pop().toLowerCase())?.id ?? null;
+function defOf(path, text2) {
+  const name = path.split("/").pop();
+  const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+  const bang = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?([\w.+-]+)/.exec(text2 ?? "")?.[1];
+  return languages().find((d) => d.filenames?.includes(name)) ?? (ext ? languages().find((d) => d.extensions.includes(ext)) : void 0) ?? (bang ? languages().find((d) => d.interpreters?.includes(bang)) : void 0) ?? null;
 }
-function hlLang(path) {
-  return languages().get(path.split(".").pop().toLowerCase())?.highlight ?? "plain";
+function langOf(path, text2) {
+  const d = defOf(path, text2);
+  return d?.grammar ? d.id : null;
+}
+function hlLang(path, text2) {
+  return defOf(path, text2)?.highlight ?? "plain";
 }
 var wasmDir = fileURLToPath(new URL("./wasm/", import.meta.url));
 var runtime;
@@ -983,7 +1058,7 @@ async function load(lang) {
     await runtime.Parser.init({ locateFile: (f) => wasmDir + f });
   }
   if (!loaded.has(lang)) {
-    const def = [...languages().values()].find((d) => d.id === lang);
+    const def = languages().find((d) => d.id === lang);
     const language = await runtime.Language.load(wasmDir + basename(def.grammar));
     const parser = new runtime.Parser();
     parser.setLanguage(language);
@@ -1013,7 +1088,7 @@ async function symbolsOf(lang, src) {
     while (node.parent && wrappers.has(node.parent.type)) node = node.parent;
     const prev = byNode.get(node.id);
     const names = [...prev?.cap.name ?? [], ...cap.name ?? []];
-    if (!prev || m.patternIndex < prev.pattern) byNode.set(node.id, { node, pattern: m.patternIndex, cap, props: { ...m.setProperties ?? {} }, parent: null, kids: [], ok: false, qn: "" });
+    if (!prev || m.patternIndex < prev.pattern) byNode.set(node.id, { node, pattern: m.patternIndex, cap, props: { ...m.setProperties ?? {} }, parent: null, kids: [], ok: false, qn: "", sep: def.separator ?? "." });
     const it = byNode.get(node.id);
     if (names.length) it.cap.name = [...new Map(names.map((n) => [n.id, n])).values()].sort((x, y) => x.startIndex - y.startIndex);
   }
@@ -1029,7 +1104,7 @@ async function symbolsOf(lang, src) {
       it.parent = parent;
       (parent ? parent.kids : top).push(it);
       const name = nameOf(it);
-      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : qualifier(it) ? `${qualifier(it)}.${name}` : name;
+      it.qn = [qualifier(it), it.cap.scope && text(it.cap.scope[0]), name].filter(Boolean).join(it.sep);
     }
     stack.push(it);
   }
@@ -1051,13 +1126,16 @@ function nameOf(it) {
 function keyOf(it) {
   const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
   const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
-  const scope = it.cap.scope ? text(it.cap.scope[0]) : qualifier(it);
-  return (scope ? scope + "." : "") + prefix + own;
+  const scope = [qualifier(it), it.cap.scope && text(it.cap.scope[0])].filter(Boolean).join(it.sep);
+  return (scope ? scope + it.sep : "") + prefix + own;
 }
 function sigOf(it, node = it.node) {
-  const body = it.cap.body?.[0] ?? null;
-  const sig = it.props.sig === "full" ? it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text : header(node, body);
-  return it.props["sig.prefix"] ? `${it.props["sig.prefix"]} ${sig}` : sig;
+  const body = it.cap.body?.reduce((a, b) => b.startIndex < a.startIndex ? b : a) ?? null;
+  let sig = it.props.sig === "full" ? it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text : header(node, body);
+  for (const c of node.descendantsOfType(["comment", "line_comment", "block_comment"], node.startPosition, body?.startPosition ?? node.endPosition)) if (c) sig = sig.replace(c.text, "");
+  if (it.props["sig.prefix"]) sig = `${it.props["sig.prefix"]} ${sig}`;
+  const name = it.cap.name?.length === 1 ? text(it.cap.name[0]) : "";
+  return name && !sig.includes(name) ? `${tidySig(sig)}${/\{\s*$/.test(sig) ? " { \u2026 }" : ""} ${name}` : sig;
 }
 var kindOf = (it) => it.parent && it.props["kind.member"] || (it.cap.kind ? it.cap.kind[0].text : it.props.kind ?? "var");
 function emit(list2, b) {
@@ -1133,7 +1211,7 @@ var Builder = class {
     const lead = o.from < row(outer) ? this.lines.slice(o.from - 1, row(outer) - 1).join("\n") + "\n" : "";
     let body = outer.text;
     for (const m of o.members ?? []) body = body.replace(m.text, "\0");
-    const sym = { key, kind: o.kind, name: o.name, sig: tidySig(o.sig), own, cmp: lead + body, ...o.iota != null ? { iota: o.iota } : {} };
+    const sym = { key, kind: o.kind, name: o.name, sig: tidySig(o.sig), own, line: row(outer), cmp: lead + body, ...o.iota != null ? { iota: o.iota } : {} };
     this.syms.push(sym);
     return sym;
   }
@@ -1153,7 +1231,7 @@ function kindKey(kind) {
   return "var";
 }
 function tidySig(s) {
-  const t = s.replace(/\s+/g, " ").trim().replace(/\s*[{:]$/, "");
+  const t = s.replace(/\s+/g, " ").trim().replace(/\s*[{:;]$/, "");
   return t.length > 220 ? t.slice(0, 217) + "\u2026" : t;
 }
 var row = (n) => n.startPosition.row + 1;
@@ -1216,7 +1294,8 @@ async function extract(src, range = { kind: "recording" }) {
     }
     if (oldText === newText && ch.status === "M") continue;
     const special = ch.oldMode === "120000" || ch.newMode === "120000" ? "symlink" : LFS.test(oldText ?? "") || LFS.test(newText ?? "") ? "Git LFS pointer; content not shown" : null;
-    const lang = special ? null : langOf(ch.path);
+    files[ch.path].lang = hlLang(ch.path, newText ?? oldText);
+    const lang = special ? null : langOf(ch.path, newText ?? oldText);
     let oldSyms = null, newSyms = null;
     if (lang) {
       try {
@@ -1254,7 +1333,7 @@ async function extract(src, range = { kind: "recording" }) {
   const namesThen = byName ? null : await namesAtTime(changes, byId, reader);
   const shortCount = /* @__PURE__ */ new Map();
   for (const c of changes) {
-    const k = `${c.file}:${c.name.split(".").pop()}`;
+    const k = `${c.file}:${lastPart(c.name)}`;
     shortCount.set(k, (shortCount.get(k) ?? 0) + 1);
   }
   const unique = (c) => (short) => (shortCount.get(`${c.file}:${short}`) ?? 0) <= 1;
@@ -1265,6 +1344,7 @@ async function extract(src, range = { kind: "recording" }) {
     name: c.name,
     sig: c.sig,
     status: c.status,
+    ...c.line ? { line: c.line } : {},
     ...c.movedFrom ? { movedFrom: c.movedFrom } : {},
     ...c.note ? { note: c.note } : {},
     rows: c.rows,
@@ -1437,8 +1517,8 @@ function detectMoves(changes) {
   const removed = changes.filter((c) => c.status === "removed" && movable(c));
   const added = changes.filter((c) => c.status === "added" && movable(c));
   for (const add of added) {
-    const short = add.name.split(".").pop();
-    const same = (c) => c.body === add.body && c.name.split(".").pop() === short;
+    const short = lastPart(add.name);
+    const same = (c) => c.body === add.body && lastPart(c.name) === short;
     const cands = removed.filter(same);
     if (cands.length !== 1 || added.filter(same).length !== 1) continue;
     const r = cands[0];
@@ -1450,6 +1530,8 @@ function detectMoves(changes) {
     changes.splice(changes.indexOf(r), 1);
   }
 }
+var lastPart = (name) => name.split(/\.|::/).pop();
+var sameName = (a, b) => a.replace(/::/g, ".") === b.replace(/::/g, ".");
 function claimKind(spec, c, names, unique) {
   const clean = spec.trim().replace(/^\.\//, "");
   for (const file2 of [c.file, c.movedFrom].filter((f) => !!f)) {
@@ -1457,8 +1539,9 @@ function claimKind(spec, c, names, unique) {
     if (!clean.startsWith(file2 + ":")) continue;
     const symbol = clean.slice(file2.length + 1);
     for (const name of names) {
-      const short = name.split(".").pop();
-      if (symbol === name || symbol === short && unique(short)) return "symbol";
+      const short = lastPart(name);
+      const tail = symbol.replace(/::/g, ".");
+      if (sameName(symbol, name) || tail.includes(".") && name.replace(/::/g, ".").endsWith("." + tail) || symbol === short && unique(short)) return "symbol";
     }
   }
   return null;
@@ -1466,13 +1549,13 @@ function claimKind(spec, c, names, unique) {
 async function namesAtTime(changes, byId, read) {
   const out = /* @__PURE__ */ new Map();
   for (const c of changes) {
-    const lang = langOf(c.file);
-    if (!lang) continue;
     for (const r of c.rows) {
       if (r.t !== "+" || !r.p || !r.pa || !byId.has(r.p)) continue;
       const key = `${r.p}:${c.file}`;
       if (out.has(key)) continue;
       const text2 = read(byId.get(r.p).to, c.file);
+      const lang = langOf(c.file, text2);
+      if (!lang) continue;
       const byLine = /* @__PURE__ */ new Map();
       if (text2 != null) {
         try {
@@ -1866,7 +1949,7 @@ function viewerData(x, n) {
     const note = n?.symbols?.[s.id];
     const later = s.later.filter((d) => decById.has(d) && !s.decisions.includes(d));
     const unlinked = new Set(s.gaps.unlinked);
-    const rows = s.rows.map((r) => {
+    const rows = showable(s.rows).map((r) => {
       const flag = r.t === "+" || r.t === "-" ? r.p === "outside" ? "o" : r.p === "before" ? "b" : r.p && unlinked.has(r.p) ? "u" : void 0 : void 0;
       return { t: r.t, o: r.o, n: r.n, s: r.s, ...flag ? { x: flag } : {} };
     });
@@ -1874,7 +1957,7 @@ function viewerData(x, n) {
     const mechanicalOnly = decs.length > 0 && decs.every((d) => d.mechanical);
     const attn = note?.attention && ATTN2.has(note.attention) ? note.attention : mechanicalOnly ? "mechanical" : "skim";
     const risks = [
-      ...[...decs, ...later.map((d) => decById.get(d))].flatMap((d) => (d.risks ?? []).map((text2) => ({ text: text2, from: d.id }))),
+      ...[...decs, ...later.map((d) => decById.get(d))].filter((d, _, all) => !all.some((o) => o.supersedes === d.id)).flatMap((d) => (d.risks ?? []).map((text2) => ({ text: text2, from: d.id }))),
       ...note?.risk ? [{ text: note.risk, from: null }] : []
     ];
     const shown = [...s.decisions, ...later].map((d) => decById.get(d)).map((d) => d && [d.id, d.title, d.why, d.alternatives, d.risks]);
@@ -1885,7 +1968,8 @@ function viewerData(x, n) {
       key: `${s.id}@${fp}`,
       file: s.file,
       kind: s.kind,
-      name: s.name,
+      name: s.kind === "other" && /^lines? /.test(s.name) ? linesName(rows) ?? s.name : s.name,
+      line: s.line ?? (s.kind === "other" ? changedLines(rows)[0] : rows.find((r) => r.n != null)?.n ?? rows.find((r) => r.o != null)?.o) ?? 0,
       sig: s.sig,
       status: s.status,
       moved: s.movedFrom,
@@ -1902,6 +1986,9 @@ function viewerData(x, n) {
       attn,
       attnWhy: note?.attentionReason ?? null
     };
+  }).filter((s) => {
+    const changed = s.rows.some((r) => (r.t === "+" || r.t === "-") && r.s.trim());
+    return changed || s.status !== "modified" || !!s.moved || !!s.note;
   });
   return {
     title: n?.title || `Changes on ${x.startedOn}`,
@@ -1932,6 +2019,45 @@ function viewerData(x, n) {
     chapters,
     symbols
   };
+}
+function showable(rows) {
+  const segs = [[]];
+  let o, n;
+  for (const r of rows) {
+    const jump = r.n != null && n != null && r.n !== n + 1 || r.o != null && o != null && r.o !== o + 1;
+    if (r.t === "gap" || jump) {
+      segs.push([]);
+      o = n = void 0;
+    }
+    if (r.t !== "gap") segs.at(-1).push(r);
+    if (r.n != null) n = r.n;
+    if (r.o != null) o = r.o;
+  }
+  const blank = (r) => !(r.s ?? "").trim();
+  const kept = segs.map((seg) => {
+    let a = 0, z = seg.length;
+    while (a < z && blank(seg[a])) a++;
+    while (z > a && blank(seg[z - 1])) z--;
+    return seg.slice(a, z);
+  }).filter((seg) => seg.length);
+  if (!kept.some((seg) => seg.some((r) => r.t === "+" || r.t === "-"))) return rows;
+  return kept.flatMap((seg, i) => i ? [{ t: "gap", s: "" }, ...seg] : seg);
+}
+function changedLines(rows) {
+  const changed = rows.filter((r) => r.t === "+" || r.t === "-");
+  const inNew = changed.some((r) => r.n != null);
+  return changed.map((r) => inNew ? r.n : r.o).filter((x) => x != null).sort((a, b) => a - b);
+}
+function linesName(rows) {
+  const nums = changedLines(rows);
+  if (!nums.length) return null;
+  const texts = new Set(rows.filter((r) => (r.t === "+" || r.t === "-") && r.s.trim()).map((r) => r.s.trim()));
+  if (texts.size === 1) {
+    const t = [...texts][0];
+    return t.length > 48 ? t.slice(0, 47) + "\u2026" : t;
+  }
+  const a = nums[0], z = nums.at(-1);
+  return a === z ? `line ${a}` : `lines ${a}\u2013${z}`;
 }
 function explicitChapters(x, n, domId) {
   const placed = /* @__PURE__ */ new Set();

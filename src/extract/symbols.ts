@@ -12,7 +12,11 @@ export type Lang = string;
 interface LangDef {
   id: string;
   extensions: string[];
-  grammar: string;
+  /** Exact file names (Makefile) and #! interpreters (ruby) for files an extension doesn't name. */
+  filenames?: string[];
+  interpreters?: string[];
+  /** The tree-sitter grammar; without one (and an outline), a file is one whole-file change. */
+  grammar?: string;
   /** The Shiki grammar the review page highlights it with. */
   highlight?: string;
   /** Another language whose outline.scm this one uses (tsx uses typescript's). */
@@ -23,29 +27,37 @@ interface LangDef {
   leading?: string[];
   /** Node types that don't count as nesting (`#ifdef` blocks): what's inside is at their level. */
   transparent?: string[];
+  /** What joins a container's name to its members' (`::` in C++ and Rust); "." by default. */
+  separator?: string;
 }
 
 const langDir = fileURLToPath(new URL("./languages/", import.meta.url));
-let defs: Map<string, LangDef> | null = null;
+let defs: LangDef[] | null = null;
 
-function languages(): Map<string, LangDef> {
-  if (!defs) {
-    defs = new Map();
-    for (const id of readdirSync(langDir)) {
-      const def: LangDef = { id, ...JSON.parse(readFileSync(`${langDir}${id}/lang.json`, "utf8")) };
-      for (const ext of def.extensions) defs.set(ext, def);
-    }
-  }
-  return defs;
+function languages(): LangDef[] {
+  return (defs ??= readdirSync(langDir).map((id) => ({ id, ...JSON.parse(readFileSync(`${langDir}${id}/lang.json`, "utf8")) })));
 }
 
-export function langOf(path: string): Lang | null {
-  return languages().get(path.split(".").pop()!.toLowerCase())?.id ?? null;
+/** The language of a file: by exact name, extension, or (with its text) a #! line. */
+function defOf(path: string, text?: string | null): LangDef | null {
+  const name = path.split("/").pop()!;
+  const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+  const bang = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?([\w.+-]+)/.exec(text ?? "")?.[1];
+  return languages().find((d) => d.filenames?.includes(name))
+    ?? (ext ? languages().find((d) => d.extensions.includes(ext)) : undefined)
+    ?? (bang ? languages().find((d) => d.interpreters?.includes(bang)) : undefined)
+    ?? null;
+}
+
+/** The language whose symbols this file is split into, or null (a whole-file change). */
+export function langOf(path: string, text?: string | null): Lang | null {
+  const d = defOf(path, text);
+  return d?.grammar ? d.id : null;
 }
 
 /** The syntax grammar the review page highlights this file with ("plain" when there's none). */
-export function hlLang(path: string): string {
-  return languages().get(path.split(".").pop()!.toLowerCase())?.highlight ?? "plain";
+export function hlLang(path: string, text?: string | null): string {
+  return defOf(path, text)?.highlight ?? "plain";
 }
 
 export interface Sym {
@@ -55,6 +67,8 @@ export interface Sym {
   sig: string;
   /** 1-based line numbers this symbol owns. Containers exclude their members' lines. */
   own: number[];
+  /** Where the declaration itself starts, after its doc comments. */
+  line: number;
   /** Exact source (doc comments + node text, members removed for containers). Equality means unchanged. */
   cmp: string;
   /** Position within a Go const group whose implicit specs repeat an iota expression. */
@@ -95,8 +109,8 @@ async function load(lang: Lang) {
     await runtime.Parser.init({ locateFile: (f: string) => wasmDir + f });
   }
   if (!loaded.has(lang)) {
-    const def = [...languages().values()].find((d) => d.id === lang)!;
-    const language = await runtime.Language.load(wasmDir + basename(def.grammar));
+    const def = languages().find((d) => d.id === lang)!;
+    const language = await runtime.Language.load(wasmDir + basename(def.grammar!));
     const parser = new runtime.Parser();
     parser.setLanguage(language);
     const query = new runtime.Query(language, readFileSync(`${langDir}${def.outline ?? def.id}/outline.scm`, "utf8"));
@@ -109,7 +123,7 @@ async function load(lang: Lang) {
  * One candidate symbol from a query match. Captures: @item (the declaration), @name (repeatable,
  * joined with ", "), @key (its identity when not the name), @key.prefix / @name.prefix (prepended
  * with a space: accessors, import aliases), @scope (qualifier instead of the container: a Go
- * receiver), @body (the signature is the text before it), @group (a declaration block the item's
+ * receiver), @body (the signature is the text before the first), @group (a declaration block the item's
  * lines share), @value, @kind (the kind from source text). Properties (#set!): kind, kind.member
  * (the kind inside a container), container, sig ("full"), sig.prefix, key, key.prefix, name
  * ("text": the item's flattened text), collapse ("single": a group of one is that one), ordinal
@@ -127,6 +141,7 @@ interface Item {
   kids: Item[];
   ok: boolean;
   qn: string;
+  sep: string;
 }
 
 export async function symbolsOf(lang: Lang, src: string): Promise<FileSymbols> {
@@ -148,7 +163,7 @@ export async function symbolsOf(lang: Lang, src: string): Promise<FileSymbols> {
     while (node.parent && wrappers.has(node.parent.type)) node = node.parent;
     const prev = byNode.get(node.id);
     const names = [...(prev?.cap.name ?? []), ...(cap.name ?? [])];
-    if (!prev || m.patternIndex < prev.pattern) byNode.set(node.id, { node, pattern: m.patternIndex, cap, props: { ...(m.setProperties ?? {}) }, parent: null, kids: [], ok: false, qn: "" });
+    if (!prev || m.patternIndex < prev.pattern) byNode.set(node.id, { node, pattern: m.patternIndex, cap, props: { ...(m.setProperties ?? {}) }, parent: null, kids: [], ok: false, qn: "", sep: def.separator ?? "." });
     // A declaration of several names (`var a, b`) matches once per name: they belong together.
     const it = byNode.get(node.id)!;
     if (names.length) it.cap.name = [...new Map(names.map((n) => [n.id, n])).values()].sort((x, y) => x.startIndex - y.startIndex);
@@ -168,7 +183,7 @@ export async function symbolsOf(lang: Lang, src: string): Promise<FileSymbols> {
       it.parent = parent;
       (parent ? parent.kids : top).push(it);
       const name = nameOf(it);
-      it.qn = it.cap.scope ? `${text(it.cap.scope[0])}.${name}` : qualifier(it) ? `${qualifier(it)}.${name}` : name;
+      it.qn = [qualifier(it), it.cap.scope && text(it.cap.scope[0]), name].filter(Boolean).join(it.sep);
     }
     stack.push(it);
   }
@@ -195,14 +210,19 @@ function nameOf(it: Item): string {
 function keyOf(it: Item): string {
   const own = it.props.key ?? (it.cap.key ? text(it.cap.key[0]).replace(it.props.name === "text" ? /;$/ : /$^/, "") : (it.cap.name ?? []).map(text).join(", ") || nameOf(it));
   const prefix = (it.props["key.prefix"] ?? "") + (it.cap["key.prefix"] ? text(it.cap["key.prefix"][0]) + " " : "");
-  const scope = it.cap.scope ? text(it.cap.scope[0]) : qualifier(it);
-  return (scope ? scope + "." : "") + prefix + own;
+  const scope = [qualifier(it), it.cap.scope && text(it.cap.scope[0])].filter(Boolean).join(it.sep);
+  return (scope ? scope + it.sep : "") + prefix + own;
 }
 
 function sigOf(it: Item, node = it.node): string {
-  const body = it.cap.body?.[0] ?? null;
-  const sig = it.props.sig === "full" ? (it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text) : header(node, body);
-  return it.props["sig.prefix"] ? `${it.props["sig.prefix"]} ${sig}` : sig;
+  const body = it.cap.body?.reduce((a, b) => (b.startIndex < a.startIndex ? b : a)) ?? null;
+  let sig = it.props.sig === "full" ? (it.props.name === "text" ? flat(node.text).replace(/;$/, "") : node.text) : header(node, body);
+  // A comment inside the signature (`#define N 10 /* … */`) isn't part of it.
+  for (const c of node.descendantsOfType(["comment", "line_comment", "block_comment"], node.startPosition, body?.startPosition ?? node.endPosition)) if (c) sig = sig.replace(c.text, "");
+  if (it.props["sig.prefix"]) sig = `${it.props["sig.prefix"]} ${sig}`;
+  // A name that comes after the body (C's `typedef struct { … } name;`) belongs in the signature too.
+  const name = it.cap.name?.length === 1 ? text(it.cap.name[0]) : "";
+  return name && !sig.includes(name) ? `${tidySig(sig)}${/\{\s*$/.test(sig) ? " { … }" : ""} ${name}` : sig;
 }
 
 const kindOf = (it: Item) => (it.parent && it.props["kind.member"]) || (it.cap.kind ? it.cap.kind[0].text : it.props.kind ?? "var");
@@ -284,7 +304,7 @@ class Builder {
     const lead = o.from < row(outer) ? this.lines.slice(o.from - 1, row(outer) - 1).join("\n") + "\n" : "";
     let body = outer.text;
     for (const m of o.members ?? []) body = body.replace(m.text, "\u0000");
-    const sym: Sym = { key, kind: o.kind, name: o.name, sig: tidySig(o.sig), own, cmp: lead + body, ...(o.iota != null ? { iota: o.iota } : {}) };
+    const sym: Sym = { key, kind: o.kind, name: o.name, sig: tidySig(o.sig), own, line: row(outer), cmp: lead + body, ...(o.iota != null ? { iota: o.iota } : {}) };
     this.syms.push(sym);
     return sym;
   }
@@ -308,7 +328,7 @@ function kindKey(kind: string) {
 }
 
 function tidySig(s: string) {
-  const t = s.replace(/\s+/g, " ").trim().replace(/\s*[{:]$/, "");
+  const t = s.replace(/\s+/g, " ").trim().replace(/\s*[{:;]$/, "");
   return t.length > 220 ? t.slice(0, 217) + "…" : t;
 }
 

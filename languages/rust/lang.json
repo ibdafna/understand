@@ -10,5 +10,6 @@
   "license": {
     "source": "https://github.com/tree-sitter/tree-sitter-rust",
     "copyright": "2017 Maxim Sokolov"
-  }
+  },
+  "separator": "::"
 }

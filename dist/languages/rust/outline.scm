@@ -14,8 +14,8 @@
 ; Trait members are methods.
 (trait_item body: (declaration_list [(function_item name: (_) @name body: (_) @body) (function_signature_item name: (_) @name)] @item) (#set! kind "method"))
 
-(use_declaration argument: (_) @key (#set! kind "import") (#set! sig "full")) @item
-(extern_crate_declaration name: (_) @key (#set! kind "import") (#set! sig "full")) @item
+(use_declaration argument: (_) @key (#set! kind "import") (#set! sig "full") (#set! qualify "no")) @item
+(extern_crate_declaration name: (_) @key (#set! kind "import") (#set! sig "full") (#set! qualify "no")) @item
 
 (function_item name: (_) @name body: (_) @body (#set! kind "func")) @item
 (function_signature_item name: (_) @name (#set! kind "func")) @item
@@ -29,5 +29,7 @@
 (static_item name: (_) @name (#set! kind "var")) @item
 
 (trait_item name: (_) @name body: (_) @body (#set! kind "interface") (#set! container "true")) @item
+; `mod name;` brings in a module file.
+(mod_item name: (_) @key !body (#set! kind "import") (#set! sig "full") (#set! qualify "no")) @item
 (mod_item name: (_) @name body: (_) @body (#set! kind "namespace") (#set! container "true")) @item
 

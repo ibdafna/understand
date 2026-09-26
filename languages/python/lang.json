@@ -11,5 +11,9 @@
   "license": {
     "source": "https://github.com/tree-sitter/tree-sitter-python",
     "copyright": "2016 Max Brunsfeld"
-  }
+  },
+  "interpreters": [
+    "python",
+    "python3"
+  ]
 }

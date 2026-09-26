@@ -1,0 +1,19 @@
+{
+  "extensions": [
+    "sh",
+    "bash",
+    "zsh"
+  ],
+  "filenames": [
+    ".bashrc",
+    ".zshrc",
+    ".profile"
+  ],
+  "interpreters": [
+    "sh",
+    "bash",
+    "zsh",
+    "dash"
+  ],
+  "highlight": "shellscript"
+}

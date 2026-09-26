@@ -41,6 +41,8 @@ That's all. `/understand:explain` (in Codex, `$explain`) produces a page any tim
 
 **What lands in your repo:** only the decision log, `.decisions/<recording>.tsv`, one row per decision, committed along with the agent's commits so the reasons travel with the code (and anyone can build a page from them). Turn that off with `git config understand.share false`. Everything else (snapshots, provenance, pages) stays in `~/.claude/understand/`.
 
+**Languages:** changes are explained function by function, method by method, in Go, TypeScript, JavaScript, Python, Rust, Java, C, C++, Ruby, and C#. Shell, Makefiles, Dockerfiles, JSON, YAML, TOML, CSS, HTML, SQL, and Markdown are syntax-highlighted and shown as whole-file changes, and any other file works as plain text. Files without an extension are recognised by name (`Makefile`, `Dockerfile`) or by their `#!` line. Adding a language is data, not code: a folder in `languages/` with its grammar and a query ([`docs/research/polyglot-symbols.md`](docs/research/polyglot-symbols.md) explains the choice).
+
 **Trunk:** Understand treats the default branch as trunk (one recording per session there, one per branch elsewhere). If it guesses wrong, set it: `git config understand.trunk <branch>`.
 
 Requires Node 20+ and git. Each tool call that can change files costs two worktree snapshots (about 0.13 s each on a 20,000-file repo).
@@ -60,9 +62,10 @@ npm run ship      # release: bump the version, build, test, commit, tag, push to
 | `hooks/hooks.json` | the hooks that make it automatic |
 | `src/hook.ts`, `src/capture.ts` | hook handlers; each tool call becomes a snapshot → snapshot transition |
 | `src/home.ts`, `src/store.ts` | per-repo state outside the repo; recordings and the decision log |
-| `src/extract/` | tree-sitter symbols (Go, TS/JS, Python), symbol-level diff, per-line provenance |
+| `languages/` | one folder per language, all data: `lang.json` (extensions, grammars) and `outline.scm` (the tree-sitter query that finds its symbols) |
+| `src/extract/` | the language-neutral symbol engine, symbol-level diff, per-line provenance |
 | `src/decisionlog.ts` | the shared `.decisions/*.tsv` log |
-| `src/explanation.ts`, `src/render.ts`, `viewer/` | the explanation format, its checks, and the page (diffs drawn by [@pierre/diffs](https://www.npmjs.com/package/@pierre/diffs), trimmed to our languages) |
+| `src/explanation.ts`, `src/render.ts`, `viewer/` | the explanation format, its checks, and the page (diffs drawn by [@pierre/diffs](https://www.npmjs.com/package/@pierre/diffs); each page carries syntax grammars only for the languages it shows) |
 | `skills/record`, `skills/explain` | keeping the log (internal) and writing the page |
 | `site/`, `examples/` | the GitHub Pages site (deployed by CI) and the example pages it shows |
 

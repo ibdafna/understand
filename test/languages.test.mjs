@@ -123,7 +123,7 @@ impl Point {
 mod util { pub fn helper() {} }
 
 const MAX: usize = 10;
-`), ["import:std::collections::HashMap", "type:Point", "type:Area", "method:Area.area", "method:Point.area", "method:Point.new", "namespace:util", "func:util.helper", "var:MAX"]);
+`), ["import:std::collections::HashMap", "type:Point", "type:Area", "method:Area::area", "method:Point::area", "method:Point::new", "namespace:util", "func:util::helper", "var:MAX"]);
 });
 
 test("Java: classes, members, nested types, records", () => {
@@ -162,7 +162,7 @@ void trace(void) {}
 `), ["import:<stdio.h>", "type:point", "type:counter", "var:total", "func:add", "func:trace", "other@10", "other@12"]);
 });
 
-test("C++: namespaces, class members, out-of-class definitions, templates", () => {
+test("C++: namespaces, class members, out-of-class definitions (named within their namespace), templates", () => {
   same(outline("a.cpp", `#include <vector>
 
 namespace app {
@@ -176,10 +176,14 @@ private:
 
 void Store::add(int v) {}
 
+const Todo& Store::get(int i) const { return items[i]; }
+
+Store::Store(int n) : n(n) {}
+
 template <typename T>
 T twice(T v) { return v; }
 }
-`), ["import:<vector>", "namespace:app", "class:app.Store", "method:app.Store.Store", "method:app.Store.size", "field:app.Store.n", "method:Store.add", "func:app.twice"]);
+`), ["import:<vector>", "namespace:app", "class:app::Store", "method:app::Store::Store", "method:app::Store::size", "field:app::Store::n", "method:app::Store::add", "method:app::Store::get", "method:app::Store::Store", "func:app::twice"]);
 });
 
 test("Ruby: requires, modules, classes, methods, constants", () => {
@@ -231,6 +235,53 @@ public class B
 `), ["namespace:App", "class:B", "method:B.M"]);
 });
 
+test("C#: a local function in top-level statements is its own symbol", () => {
+  same(outline("Program.cs", `using System;
+
+var x = Twice(2);
+Console.WriteLine(x);
+
+static int Twice(int v)
+{
+    return v * 2;
+}
+`), ["import:System", "func:Twice", "other@3"]);
+});
+
+test("files without an extension: by name (Makefile) and by #! line", () => {
+  same(outline("bin/todo", `#!/usr/bin/env ruby
+def main
+  puts "hi"
+end
+`), ["func:main"]);
+  const t = repo();
+  try {
+    t.write("README", "x\n");
+    t.commit();
+    t.bash("add files", () => { t.write("Makefile", "all:\n\techo hi\n"); t.write("run", "#!/bin/sh\necho hi\n"); });
+    const x = t.extract();
+    assert.equal(x.files["Makefile"].lang, "make");
+    assert.equal(x.files["run"].lang, "shellscript");
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("a decision may name a Rust or C++ member with . or ::", () => {
+  const t = repo();
+  try {
+    t.write("a.rs", "struct Point {}\n");
+    t.commit();
+    t.hook("session-start");
+    t.edit("a.rs", "struct Point {}\n", "struct Point {}\n\nimpl Point {\n    fn new() -> Point { Point {} }\n}\n");
+    t.u("decide", "--title", "Add a constructor", "--why", "w", "--for", "a.rs:Point.new");
+    const s = t.extract().symbols.find((s) => s.name === "Point::new");
+    assert.ok(s?.explained, "Point.new names Point::new");
+  } finally {
+    t.cleanup();
+  }
+});
+
 test("a language with no data is one whole-file change", () => {
   same(outline("notes.txt", "hello\n"), ["file"]);
 });
@@ -247,4 +298,140 @@ test("a page carries the syntax grammars of the languages in its diff, and no ot
   } finally {
     t.cleanup();
   }
+});
+
+/** The review page's data for a change from `before` to `after` in one file. */
+function page(path, before, after) {
+  const t = repo();
+  try {
+    t.write(path, before);
+    t.commit();
+    t.bash("edit", () => t.write(path, after));
+    return JSON.parse(readFileSync(t.u("render").trim(), "utf8").match(/const DATA = (.*?);<\/script>/)[1]);
+  } finally {
+    t.cleanup();
+  }
+}
+
+test("an overload's card shows only its own lines; a new overload is all added", () => {
+  const d = page("Todo.java", `class Todo {
+    Todo(int id, String title) {
+        this.id = id;
+        this.title = title;
+    }
+}
+`, `class Todo {
+    Todo(int id, String title) {
+        this(id, title, null);
+    }
+
+    Todo(int id, String title, String due) {
+        this.id = id;
+        this.title = title;
+        this.due = due;
+    }
+}
+`);
+  const [old, added] = d.symbols.filter((s) => s.name === "Todo.Todo");
+  assert.ok(!old.rows.some((r) => r.t === " " && /this\.id = id/.test(r.s)), "the old body isn't shown as this constructor's context");
+  assert.ok(old.rows.some((r) => r.t === "-" && /this\.id = id/.test(r.s)), "it shows as removed from this constructor");
+  assert.deepEqual(old.rows.filter((r) => r.s.trim() === "}").map((r) => r.t), [" "], "its closing brace stayed");
+  assert.ok(added.rows.every((r) => r.t === "+" || r.t === "gap"), "the new overload is all added");
+});
+
+test("a class whose only change is a new member (and spacing) has no card of its own", () => {
+  const d = page("A.java", `class A {
+    void a() {}
+}
+`, `class A {
+    void a() {}
+
+    void b() {}
+}
+`);
+  assert.deepEqual(d.symbols.map((s) => s.name), ["A.b"]);
+  for (const s of d.symbols) {
+    const rows = s.rows.filter((r) => r.t !== "gap");
+    for (const r of [rows[0], rows.at(-1)]) assert.ok(r.s.trim(), "no blank line at either end");
+  }
+});
+
+test("C++: a constructor's signature stops before its initializer list", () => {
+  const t = repo();
+  try {
+    t.write("README", "x\n");
+    t.commit();
+    t.bash("add file", () => t.write("a.cpp", "class A {\n    int n;\n    A(int v) : n(v) {}\n};\n\nA::A(long v) : n(v) {}\n"));
+    const sigs = t.extract().symbols.filter((s) => s.name.endsWith("A::A")).map((s) => s.sig);
+    assert.deepEqual(sigs.sort(), ["A(int v)", "A::A(long v)"]);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("signatures: no trailing ;, no comments, a name after its body keeps the body's place, no block opener", () => {
+  const sigs = (path, src) => {
+    const t = repo();
+    try {
+      t.write("README", "x\n");
+      t.commit();
+      t.bash("add file", () => t.write(path, src));
+      return Object.fromEntries(t.extract().symbols.filter((s) => s.file === path).map((s) => [s.name, s.sig]));
+    } finally {
+      t.cleanup();
+    }
+  };
+  const c = sigs("a.h", "#define LEN 10 /* YYYY-MM-DD */\ntypedef struct {\n  int n;\n} counter;\nint add(int a, int b);\n");
+  assert.equal(c.LEN, "#define LEN 10");
+  assert.equal(c.counter, "typedef struct { … } counter");
+  assert.equal(c.add, "int add(int a, int b)");
+  const rb = sigs("a.rb", "Item = Struct.new(:id, :due) do\n  def overdue?\n    false\n  end\nend\n");
+  assert.equal(rb.Item, "Item = Struct.new(:id, :due)");
+});
+
+test("Rust: `mod name;` is a symbol of its own", () => {
+  same(outline("src/main.rs", "mod date;\nmod store;\n\nfn main() {}\n"), ["import:date", "import:store", "func:main"]);
+});
+
+test("a decision may name a member by its qualified tail (Store::due in namespace todo)", () => {
+  const t = repo();
+  try {
+    t.write("a.cpp", "namespace todo {\n}\n");
+    t.commit();
+    t.hook("session-start");
+    t.edit("a.cpp", "namespace todo {\n}\n", "namespace todo {\nint Store::due() const { return 1; }\n}\n");
+    t.u("decide", "--title", "Add due", "--why", "w", "--for", "a.cpp:Store::due");
+    const s = t.extract().symbols.find((s) => s.name === "todo::Store::due");
+    assert.ok(s?.explained, "Store::due names todo::Store::due");
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("a card's rows have no gap between a removed line and the line that replaced it", () => {
+  const d = page("a.hpp", `class Store {
+public:
+    void a();
+private:
+};
+`, `class Store {
+public:
+    void a();
+    void b();
+protected:
+};
+`);
+  const rows = d.symbols.find((s) => s.name === "Store").rows;
+  const i = rows.findIndex((r) => r.t === "-");
+  assert.equal(rows[i + 1]?.t, "+", JSON.stringify(rows));
+});
+
+test("C++: methods that return a reference or pointer are members too", () => {
+  same(outline("a.hpp", `class Store {
+public:
+    const Todo& add(const std::string& title);
+    Todo* find(int id);
+    const std::vector<Todo>& list() const { return todos_; }
+};
+`), ["class:Store", "method:Store::add", "method:Store::find", "method:Store::list"]);
 });

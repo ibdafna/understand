@@ -1,4 +1,4 @@
-import { diffLines } from "diff";
+import { diffArrays, diffLines } from "diff";
 import type { FileSymbols, Sym } from "./symbols.js";
 
 /**
@@ -22,6 +22,8 @@ export interface SymChange {
   kind: string;
   name: string;
   sig: string;
+  /** The declaration's line: in the new file, or the old one for a removed symbol. */
+  line?: number;
   status: Status;
   rows: Row[];
   /** Exact source, used to detect cross-file moves. */
@@ -57,6 +59,13 @@ export function compress(rows: Row[], context = CONTEXT): Row[] {
     for (let j = Math.max(0, i - context); j <= Math.min(rows.length - 1, i + context); j++) keep[j] = true;
   });
   keep[0] = true;
+  // Hiding a few lines saves nothing and loses the thread; only longer runs become a gap.
+  for (let i = 0; i < rows.length; ) {
+    let j = i;
+    while (j < rows.length && !keep[j] && rows[j].t !== "gap") j++;
+    if (j - i < 4) for (let k = i; k < j; k++) keep[k] = true;
+    i = Math.max(j, i + 1);
+  }
   const out: Row[] = [];
   let skipped = 0;
   const flush = () => {
@@ -97,6 +106,31 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
   const pending: Pending[] = [];
   const owner = new Map<Row, Pending>();
   const claim = (p: Pending) => { p.raw.forEach((r) => { if (!owner.has(r)) owner.set(r, p); }); pending.push(p); };
+  // An unchanged line shown as one side of a symbol's change; it keeps its place in the file's order.
+  const side = (r: Row, t: "+" | "-"): Row => {
+    const copy: Row = t === "+" ? { t, n: r.n, s: r.s } : { t, o: r.o, s: r.s };
+    at.set(copy, at.get(r)!);
+    return copy;
+  };
+  // Lines moved between symbols: align this symbol's own old and new lines afresh, so a line that stayed
+  // (the closing brace of a constructor whose body went to a new overload) reads as context, not removed and re-added.
+  const realign = (raw: Row[]): Row[] => {
+    const o = raw.filter((r) => r.t !== "+"), n = raw.filter((r) => r.t !== "-");
+    const out: Row[] = [];
+    let i = 0, j = 0;
+    for (const part of diffArrays(o.map((r) => r.s), n.map((r) => r.s))) {
+      for (let k = 0; k < part.value.length; k++) {
+        if (part.removed) { const r = o[i++]; out.push(r.t === "-" ? r : side(r, "-")); continue; }
+        if (part.added) { const r = n[j++]; out.push(r.t === "+" ? r : side(r, "+")); continue; }
+        const a = o[i++], b = n[j++];
+        if (a === b) { out.push(a); continue; }
+        const r: Row = { t: " ", o: a.o, n: b.n, s: b.s };
+        at.set(r, at.get(b)!);
+        out.push(r);
+      }
+    }
+    return out;
+  };
   // Which symbols appeared or disappeared whole (the group-wrapper rule below needs to know).
   const status = new Map<string, "added" | "removed">();
 
@@ -116,17 +150,29 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
     while (oList.length && nList.length) {
       const a = oList.shift()!, b = nList.shift()!;
       const ownO = new Set(a.own), ownN = new Set(b.own);
-      const raw = rows.filter((r) => (r.t === "-" && ownO.has(r.o!)) || (r.t === "+" && ownN.has(r.n!)) || (r.t === " " && (ownO.has(r.o!) || ownN.has(r.n!))));
+      // An unchanged line that left this symbol (or joined it) is, for this symbol, removed (or added):
+      // an old constructor's body now in a new overload isn't this constructor's context.
+      let moved = false;
+      const raw = rows.flatMap((r) => {
+        if (r.t === "-") return ownO.has(r.o!) ? [r] : [];
+        if (r.t === "+") return ownN.has(r.n!) ? [r] : [];
+        if (r.t !== " ") return [];
+        const o = ownO.has(r.o!), n = ownN.has(r.n!);
+        if (o !== n) moved = true;
+        return o && n ? [r] : o ? [side(r, "-")] : n ? [side(r, "+")] : [];
+      });
       const note = a.iota != null && b.iota != null && a.iota !== b.iota ? `implicit iota value moved from position ${a.iota} to ${b.iota}` : undefined;
-      claim({ ...meta(b), status: "modified", raw, body: b.cmp, ...(note ? { note } : {}) });
+      const p: Pending = { ...meta(b), status: "modified", raw, body: b.cmp, ...(note ? { note } : {}) };
+      claim(p);
+      if (moved) p.raw = realign(raw);
     }
     for (const b of nList) {
       status.set(b.key, "added");
-      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x): x is Row => !!x && x.t !== "-"), body: b.cmp });
+      claim({ ...meta(b), status: "added", raw: b.own.map((n) => byNew.get(n)).filter((x): x is Row => !!x && x.t !== "-").map((r) => (r.t === " " ? side(r, "+") : r)), body: b.cmp });
     }
     for (const a of oList) {
       status.set(a.key, "removed");
-      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x): x is Row => !!x && x.t !== "+"), body: a.cmp });
+      claim({ ...meta(a), status: "removed", raw: a.own.map((o) => byOld.get(o)).filter((x): x is Row => !!x && x.t !== "+").map((r) => (r.t === " " ? side(r, "-") : r)), body: a.cmp });
     }
   }
   const attach = (r: Row, to: Pending) => {
@@ -168,14 +214,23 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
   let i = 0;
   while (i < rows.length) {
     if (!loose[i]) { i++; continue; }
+    // Changes whose context would touch are one hunk; context never repeats lines a symbol shows.
     let j = i;
-    while (j + 1 < rows.length && (loose[j + 1] || (rows[j + 1].t === " " && j + 2 < rows.length && loose[j + 2]))) j++;
+    for (;;) {
+      let k = j + 1;
+      while (k < rows.length && !loose[k] && rows[k].t === " " && k - j <= 5) k++;
+      if (k < rows.length && loose[k] && k - j <= 5) j = k;
+      else break;
+    }
+    const free = (x: number) => rows[x].t === " " && !owner.has(rows[x]);
     let from = i, to = j;
-    for (let k = 0; k < 2 && from > 0 && rows[from - 1].t === " "; k++) from--;
-    for (let k = 0; k < 2 && to + 1 < rows.length && rows[to + 1].t === " "; k++) to++;
+    for (let k = 0; k < 2 && from > 0 && free(from - 1); k++) from--;
+    for (let k = 0; k < 2 && to + 1 < rows.length && free(to + 1); k++) to++;
     const hunk = rows.slice(from, to + 1);
     const changed = rows.slice(i, j + 1).filter((r) => r.t !== " ");
-    const nums = hunk.map((r) => r.n ?? r.o!).filter((x) => x != null);
+    // Named by the new file's lines when it has any, else the old file's; never a mix.
+    const inNew = changed.some((r) => r.n != null);
+    const nums = changed.map((r) => (inNew ? r.n : r.o)).filter((x): x is number => x != null);
     const first = changed[0];
     const plus = changed.filter((r) => r.t === "+").map((r) => r.s).sort();
     const minus = changed.filter((r) => r.t === "-").map((r) => r.s).sort();
@@ -187,7 +242,7 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
     out.push({
       key: `other@${first.n ?? `o${first.o}`}`,
       kind: "other",
-      name: `${what} ${Math.min(...nums)}–${Math.max(...nums)}`,
+      name: Math.min(...nums) === Math.max(...nums) ? `${what.replace(/^lines$/, "line")} ${nums[0]}` : `${what} ${Math.min(...nums)}–${Math.max(...nums)}`,
       sig: "",
       status: newText == null ? "removed" : oldText == null ? "added" : "modified",
       rows: compress(hunk),
@@ -200,7 +255,7 @@ export function diffFile(oldText: string | null, newText: string | null, oldSyms
 }
 
 function meta(s: Sym) {
-  return { key: s.key, kind: s.kind, name: s.name, sig: s.sig };
+  return { key: s.key, kind: s.kind, name: s.name, sig: s.sig, line: s.line };
 }
 
 /** Insert a gap marker where line numbers jump (e.g. a class shell with its members lifted out). */
@@ -209,7 +264,7 @@ function withGaps(rows: Row[]): Row[] {
   let prevO: number | undefined, prevN: number | undefined;
   for (const r of rows) {
     const jump = (r.o != null && prevO != null && r.o > prevO + 1) || (r.n != null && prevN != null && r.n > prevN + 1);
-    if (jump) out.push({ t: "gap", s: "members shown separately" });
+    if (jump) { out.push({ t: "gap", s: "members shown separately" }); prevO = prevN = undefined; } // the gap covers both sides' skip
     out.push(r);
     if (r.o != null) prevO = r.o;
     if (r.n != null) prevN = r.n;
@@ -218,6 +273,5 @@ function withGaps(rows: Row[]): Row[] {
 }
 
 export function firstLine(c: SymChange): number {
-  const r = c.rows.find((r) => r.t !== "gap");
-  return r?.n ?? r?.o ?? 0;
+  return c.rows.find((r) => r.n != null)?.n ?? c.rows.find((r) => r.o != null)?.o ?? 0;
 }

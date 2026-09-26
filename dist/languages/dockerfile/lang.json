@@ -1,0 +1,10 @@
+{
+  "extensions": [
+    "dockerfile"
+  ],
+  "filenames": [
+    "Dockerfile",
+    "Containerfile"
+  ],
+  "highlight": "docker"
+}

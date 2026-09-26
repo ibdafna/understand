@@ -22,5 +22,6 @@
   "license": {
     "source": "https://github.com/tree-sitter/tree-sitter-cpp",
     "copyright": "2014 Max Brunsfeld"
-  }
+  },
+  "separator": "::"
 }

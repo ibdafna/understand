@@ -1,0 +1,9 @@
+{
+  "extensions": [
+    "toml"
+  ],
+  "filenames": [
+    "Cargo.lock"
+  ],
+  "highlight": "toml"
+}
