@@ -1,3 +1,5 @@
 .understand/
 .DS_Store
 node_modules/
+.claude/
+.expect/
